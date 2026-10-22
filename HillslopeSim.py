@@ -190,6 +190,29 @@ BOND_BREAK_MULT  = 1.5      # Bonds break when gap ≥ BOND_BREAK_MULT × PARTIC
                              # Lower = more brittle; higher = more ductile.
 RESTITUTION      = 0.01     # Coefficient of restitution (bounciness; 0.01=inelastic cohesive)
 
+# Contact physics can be disabled independently without losing material values.
+SIMULATE_CONTACT_FRICTION = True
+SIMULATE_RESTITUTION = True
+SIMULATE_COHESION = True
+SIMULATE_BUOYANCY = True
+SIMULATE_HYDRAULIC_FORCES = True
+SIMULATE_LIFT = True
+_PARTICLE_PHYSICS_FIELDS = {
+    "SIMULATE_CONTACT_FRICTION": ("Contact friction", True),
+    "SIMULATE_RESTITUTION": ("Collision restitution (bounce)", True),
+    "SIMULATE_COHESION": ("Cohesion / breakable bonds", True),
+    "SIMULATE_BUOYANCY": ("Buoyancy (stream bed)", True),
+    "SIMULATE_HYDRAULIC_FORCES": ("Fluid drag / traction (stream bed)", True),
+    "SIMULATE_LIFT": ("Additional lift closure (stream bed)", True),
+}
+
+
+def _contact_parameters():
+    """Effective contact properties; stored material coefficients stay unchanged."""
+    return (FRICTION_COEFF if SIMULATE_CONTACT_FRICTION else 0.0,
+            RESTITUTION if SIMULATE_RESTITUTION else 0.0,
+            COHESION_FORCE if SIMULATE_COHESION and MATERIAL_TYPE != "granular" else 0.0)
+
 # -------------------------------------------------------------------
 # 1.6  TILTING / ROTATION PARAMETERS
 # -------------------------------------------------------------------
@@ -238,7 +261,7 @@ TURBULENCE_SEED = 314159
 _STREAM_FIELDS = {
     "STREAM_DOMAIN_SCALE": ("Domain / bed scale factor:", STREAM_DOMAIN_SCALE),
     "STREAM_FORCING": ("Hydraulic forcing:", STREAM_FORCING),
-    "BED_STRESS_MEAN": ("Mean / steady stress (N/m²):", BED_STRESS_MEAN),
+    "BED_STRESS_MEAN": ("Reference bed stress (N/m²):", BED_STRESS_MEAN),
     "BED_STRESS_AMPLITUDE": ("Harmonic amplitude (N/m²):", BED_STRESS_AMPLITUDE),
     "BED_STRESS_FREQUENCY": ("Harmonic frequency (Hz):", BED_STRESS_FREQUENCY),
     "STREAM_DURATION": ("Flow duration (s):", STREAM_DURATION),
@@ -1311,6 +1334,9 @@ def _stabilize_initial_slope() -> float:
     """
     global COHESION_FORCE, AUTO_STABILIZE
 
+    if not SIMULATE_COHESION:
+        print("  Cohesion disabled; preserving the configured bond strength.")
+        return 0.0
     if MATERIAL_TYPE == "granular":
         COHESION_FORCE = 0.0
 
@@ -1318,7 +1344,7 @@ def _stabilize_initial_slope() -> float:
         return COHESION_FORCE
 
     beta = math.atan2(SLOPE_HEIGHT - SLOPE_BASE, SLOPE_LENGTH)
-    phi  = math.atan(FRICTION_COEFF)
+    phi  = math.atan(_contact_parameters()[0])
     # Bulk unit weight accounting for porosity
     gamma_bulk = PARTICLE_DENSITY * (1.0 - TARGET_POROSITY)   # kg/m³
     unit_weight = gamma_bulk * GRAVITY_MAG                     # N/m³
@@ -1423,6 +1449,7 @@ class PymunkBackend:
         W = m2px(DOMAIN_X)
         H = m2px(DOMAIN_Z)
         thickness = m2px(_wall_inset())
+        friction, restitution, _ = _contact_parameters()
 
         walls = [
             pm.Segment(sb, (0, 0), (W, 0), thickness),           # floor
@@ -1436,14 +1463,15 @@ class PymunkBackend:
             walls[0] = pm.Segment(sb, (0, floor_center), (W, floor_center), thickness)
         self.walls = walls
         for w in walls:
-            w.friction = math.sqrt(FRICTION_COEFF) if STREAM_BED_SETUP else FRICTION_COEFF
-            w.elasticity = RESTITUTION
+            w.friction = math.sqrt(friction) if STREAM_BED_SETUP else friction
+            w.elasticity = restitution
             w.collision_type = 2  # WALL
         self.space.add(*walls)
 
     # ── Particles ──────────────────────────────────────────────────
     def _build_particles(self):
         pm = self.pymunk
+        friction, restitution, _ = _contact_parameters()
         if self._spec_override is None and FRACTURE_MODE.upper() == "DFN" and PARTICLE_SHAPE == "rectangle":
             blocks = _fracture_domain_with_dfn()
             for b in blocks:
@@ -1457,8 +1485,8 @@ class PymunkBackend:
                 verts_px = [(m2px(vx), m2px(vz)) for vx, vz in verts_local]
                 shape = pm.Poly(body, verts_px)
                 shape.density = PARTICLE_DENSITY / (PX_PER_M ** 2)
-                shape.friction = math.sqrt(FRICTION_COEFF) if STREAM_BED_SETUP else FRICTION_COEFF
-                shape.elasticity = RESTITUTION
+                shape.friction = math.sqrt(friction) if STREAM_BED_SETUP else friction
+                shape.elasticity = restitution
                 shape.collision_type = 1
 
                 self.space.add(body, shape)
@@ -1501,8 +1529,8 @@ class PymunkBackend:
                 shape.density = PARTICLE_DENSITY / (PX_PER_M ** 2)
                 body.angle = ang   # apply in-plane orientation
 
-            shape.friction = math.sqrt(FRICTION_COEFF) if STREAM_BED_SETUP else FRICTION_COEFF
-            shape.elasticity = RESTITUTION
+            shape.friction = math.sqrt(friction) if STREAM_BED_SETUP else friction
+            shape.elasticity = restitution
             shape.collision_type = 1  # PARTICLE
 
             self.space.add(body, shape)
@@ -1547,7 +1575,8 @@ class PymunkBackend:
         This is physically correct: no cohesion during settling (natural
         compaction), then cemented contacts that fracture under tension.
         """
-        if COHESION_FORCE <= 0:
+        cohesion = _contact_parameters()[2]
+        if cohesion <= 0:
             return
         pm = self.pymunk
         pos = self.get_positions()  # metres after settling
@@ -1556,7 +1585,7 @@ class PymunkBackend:
         break_ext = max((BOND_BREAK_MULT - 1.0) * PARTICLE_SIZE, 1e-4)  # m
         # Spring stiffness: F rises linearly from 0 at contact to
         # COHESION_FORCE at break extension (see unit analysis: k_pymunk = k_SI)
-        k = COHESION_FORCE / break_ext  # N/m
+        k = cohesion / break_ext  # N/m
         count = 0
         variable_sizes = PARTICLE_SHAPE == "mixed" or _size_distribution().mode != "single"
         for i in range(n):
@@ -1565,7 +1594,7 @@ class PymunkBackend:
                     pair_size = (self.particle_sizes[i] + self.particle_sizes[j]) / 2
                     bond_search = pair_size * 1.05
                     break_ext = max((BOND_BREAK_MULT - 1.0) * pair_size, 1e-4)
-                    k = COHESION_FORCE / break_ext
+                    k = cohesion / break_ext
                 dx = pos[j, 0] - pos[i, 0]
                 dz = pos[j, 1] - pos[i, 1]
                 dist = math.sqrt(dx * dx + dz * dz)
@@ -1751,9 +1780,10 @@ class PychronoBackend:
     def _make_material(self, is_wall=False):
         chrono = self.chrono
         mat = chrono.ChContactMaterialNSC()
-        mat.SetFriction(FRICTION_COEFF)
-        mat.SetRestitution(RESTITUTION)
-        mat.SetCohesion(COHESION_FORCE if not is_wall else 0.0)
+        friction, restitution, cohesion = _contact_parameters()
+        mat.SetFriction(friction)
+        mat.SetRestitution(restitution)
+        mat.SetCohesion(cohesion if not is_wall else 0.0)
         return mat
 
     def _build_walls(self):
@@ -2526,6 +2556,7 @@ def estimate_factor_of_safety(positions: np.ndarray, angle_deg: float,
     # Driving moment: sum of (gravity tangential component × distance from toe)
     driving = 0.0
     resisting = 0.0
+    friction, _, cohesion = _contact_parameters()
     if particle_planform_areas is not None and len(particle_planform_areas) == len(positions):
         particle_weights = PARTICLE_DENSITY * particle_planform_areas * GRAVITY_MAG
     elif PARTICLE_SHAPE == "circle":
@@ -2550,8 +2581,7 @@ def estimate_factor_of_safety(positions: np.ndarray, angle_deg: float,
         # Resisting: friction × normal force approx + cohesion
         # Normal force ≈ weight component perpendicular to slope
         normal_comp = particle_weight * abs(gx * dx + gz * dz) / arm
-        resist = (normal_comp * math.tan(math.radians(math.degrees(math.atan(FRICTION_COEFF))))
-              + COHESION_FORCE)
+        resist = normal_comp * friction + cohesion
         resisting += resist * arm
 
     if driving < 1e-12:
@@ -2612,8 +2642,9 @@ def run_simulation(progress_callback=None, save_video=True, return_data=False, i
     # ── Run the slope stability pre-check; may raise COHESION_FORCE ──
     _stabilize_initial_slope()
 
+    friction, restitution, cohesion = _contact_parameters()
     print(f"Material     : type={MATERIAL_TYPE}, rho={PARTICLE_DENSITY} kg/m3, "
-          f"mu={FRICTION_COEFF}, coh={COHESION_FORCE:.4f} N, e={RESTITUTION}")
+          f"mu={friction}, coh={cohesion:.4f} N, e={restitution}")
 
     # ── Initialise backend ────────────────────────────────────────
     backend = _initialize_backend(initialization_callback)
@@ -3358,6 +3389,7 @@ PRESETS = {
         **{name: globals()[name] for name in _HOTSTART_OPTIONS},
         **{name: globals()[name] for name in _STREAM_FIELDS},
         **{name: globals()[name] for name in _SOLVER_FIELDS},
+        **{name: globals()[name] for name in _PARTICLE_PHYSICS_FIELDS},
         **{name: globals()[name] for name in _RECORDING_FIELDS},
     },
     **PRESETS,
@@ -3411,6 +3443,8 @@ class HillslopeSimGUI:
         self.var_recirculation = tk.BooleanVar(value=RECIRCULATION)
         self.stream_vars = {name: (tk.BooleanVar if isinstance(default, bool) else tk.StringVar)(value=globals()[name])
                             for name, (_, default) in _STREAM_FIELDS.items()}
+        self.particle_physics_vars = {name: tk.BooleanVar(value=globals()[name])
+                                     for name in _PARTICLE_PHYSICS_FIELDS}
         self.solver_vars = {name: (tk.BooleanVar if isinstance(default, bool) else tk.StringVar)(value=globals()[name])
                             for name, (_, default) in _SOLVER_FIELDS.items()}
         # 1. Engine & Domain
@@ -3744,9 +3778,10 @@ class HillslopeSimGUI:
                   "Implicit drag and a smooth startup ramp stabilize initial loading.\n"
                   "Settling damping is applied only before flow time zero.\n"
                   "Turbulence has correlated space/time fluctuations scaled by u*.\n"
-                  "Advanced flow assumes hydrostatic, locally developed flow;\n"
-                  "it does not resolve 2D/3D eddies or free-surface evolution.\n"
+                  "Both solvers use hydrostatic, locally developed columns;\n"
+                  "Neither resolves 2D/3D eddies or free-surface evolution.\n"
                   "Solver Settle Time runs before the flow clock starts.\n"
+                  "Stress is referenced to the initial depth.\n"
                   "The stress multiplier and lift ratio require calibration.",
                   wraplength=370).pack(fill=tk.X, pady=8)
 
@@ -3775,6 +3810,17 @@ class HillslopeSimGUI:
                   "Equal counts: .002; .004 (half of each size)\n"
                   "Multiple sizes use grid packing; rectangle axes scale together.",
                   wraplength=370).grid(row=8, column=0, columnspan=2, sticky="w", padx=6, pady=4)
+
+        lf_physics = ttk.LabelFrame(lf_part, text="Particle Physics", padding=6)
+        lf_physics.grid(row=9, column=0, columnspan=2, sticky="ew", padx=6, pady=4)
+        for name, (label, _) in _PARTICLE_PHYSICS_FIELDS.items():
+            ttk.Checkbutton(lf_physics, text=label,
+                            variable=self.particle_physics_vars[name],
+                            command=self._on_param_modified).pack(anchor="w")
+        ttk.Label(lf_physics, text="Applies to the next run; coefficients are retained.\n"
+                  "Lift also requires a nonzero lift ratio.\n"
+                  "Cohesion also requires a cohesive material.",
+                  wraplength=340).pack(fill=tk.X, pady=(4, 0))
 
         tab_mix = ttk.Frame(nb, padding=6)
         nb.add(tab_mix, text="Mixture")
@@ -4060,6 +4106,8 @@ class HillslopeSimGUI:
                     globals()[name] = _parse_control(var.get(), _STREAM_FIELDS[name][1])
             for name, var in self.solver_vars.items():
                 globals()[name] = _parse_control(var.get(), _SOLVER_FIELDS[name][1])
+            for name, var in self.particle_physics_vars.items():
+                globals()[name] = _parse_control(var.get(), _PARTICLE_PHYSICS_FIELDS[name][1])
             ENGINE = self.var_engine.get().strip()
             QUASI_2D = bool(self.var_quasi2d.get())
             DOMAIN_X = max(0.1, float(self.var_domain_x.get()))
@@ -4188,6 +4236,8 @@ class HillslopeSimGUI:
             var.set(cfg.get(name, _STREAM_FIELDS[name][1]))
         for name, var in self.solver_vars.items():
             var.set(cfg.get(name, _SOLVER_FIELDS[name][1]))
+        for name, var in self.particle_physics_vars.items():
+            var.set(_parse_control(cfg.get(name, _PARTICLE_PHYSICS_FIELDS[name][1]), True))
         for name, var in self.recording_vars.items():
             value = cfg.get(name, _RECORDING_FIELDS[name][1])
             var.set("" if value is None else value)
@@ -4279,14 +4329,13 @@ class HillslopeSimGUI:
             self.lbl_stab_info.config(text="Stream-bed grains use submerged weight and contact force/moment balance. "
                                            "The hillslope cohesion pre-check does not apply.")
             return
-        old_coh = COHESION_FORCE
         new_coh = _stabilize_initial_slope()
-        self.var_cohesion.set(round(new_coh, 4))
+        self.var_cohesion.set(round(COHESION_FORCE, 4))
         beta = math.degrees(math.atan2(SLOPE_HEIGHT - SLOPE_BASE, SLOPE_LENGTH))
-        phi = math.degrees(math.atan(FRICTION_COEFF))
+        phi = math.degrees(math.atan(_contact_parameters()[0]))
         msg = (f"Slope angle β = {beta:.1f}°, Friction angle φ = {phi:.1f}°\n"
-               f"Material: {MATERIAL_TYPE.upper()} | Cohesion Force set to {new_coh:.4f} N "
-               f"(was {old_coh:.4f} N)")
+               f"Material: {MATERIAL_TYPE.upper()} | Effective cohesion = {new_coh:.4f} N "
+               f"(configured: {COHESION_FORCE:.4f} N)")
         self.lbl_stab_info.config(text=msg)
 
     # ── Preview Initial Slope Geometry ─────────────────────────────
@@ -5095,6 +5144,7 @@ class HillslopeSimGUI:
         cfg.update({name: globals()[name] for name in _HOTSTART_OPTIONS})
         cfg.update({name: globals()[name] for name in _STREAM_FIELDS})
         cfg.update({name: globals()[name] for name in _SOLVER_FIELDS})
+        cfg.update({name: globals()[name] for name in _PARTICLE_PHYSICS_FIELDS})
         cfg.update({name: globals()[name] for name in _RECORDING_FIELDS})
         cfg["STREAM_BED_SETUP"] = STREAM_BED_SETUP
         with open(path, "w", encoding="utf-8") as f:

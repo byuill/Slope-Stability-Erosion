@@ -338,9 +338,14 @@ class StreamForces:
         self.exposure = np.zeros(len(self.active))
         self.force = np.zeros((len(self.active), 2))
         self.points = backend.get_positions().copy()
-        self.buoyancy = self.physics.masses * (
-            s.WATER_DENSITY / s.PARTICLE_DENSITY * s.GRAVITY_MAG)
-        self.full_buoyancy = self.buoyancy.copy()
+        self.full_buoyancy = self.physics.masses*(s.WATER_DENSITY/s.PARTICLE_DENSITY*s.GRAVITY_MAG)
+        self.buoyancy = self.full_buoyancy.copy() if s.SIMULATE_BUOYANCY else np.zeros_like(self.full_buoyancy)
+        self.fluid_impulse = np.zeros(2)
+        self._sizes = np.asarray(backend.particle_sizes)
+        self._circles = np.array([local is None for local in backend.particle_draw_local_vertices])
+        ncols = max(128, min(100000, int(math.ceil(s.DOMAIN_X/self._sizes.min()*24))))
+        self._dx = s.DOMAIN_X/ncols
+        self._xs = (np.arange(ncols)+.5)*self._dx
         self.envelope_x = self.envelope_z = np.zeros(0)
         self.bed_surface_z = np.zeros(0)
         self.mean_bed_elevation = s.SLOPE_BASE
@@ -362,9 +367,8 @@ class StreamForces:
         self.points = pos.copy()
         # At least 24 samples across the smallest grain. Midpoint samples avoid
         # circle tangencies and edge ambiguities; local slices bound cost.
-        ncols = max(128, min(100000, int(math.ceil(s.DOMAIN_X / min(b.particle_sizes) * 24))))
-        dx = s.DOMAIN_X / ncols
-        xs = (np.arange(ncols) + .5) * dx
+        xs, dx = self._xs, self._dx
+        ncols = len(xs)
         profile = np.full(ncols, -np.inf)
         traces = []
         for i in np.flatnonzero(self.active):
@@ -403,9 +407,10 @@ class StreamForces:
             if not np.any(visible):
                 continue
             exposed_height = (zmax-zmin)*fraction
-            if tau is not None:
+            if tau is not None and s.SIMULATE_HYDRAULIC_FORCES:
+                lift = s.STREAM_LIFT_RATIO if s.SIMULATE_LIFT else 0.
                 self.force[i] = (tau*s.GRAIN_STRESS_FACTOR*exposed_height,
-                                 tau*s.GRAIN_STRESS_FACTOR*exposed_height*s.STREAM_LIFT_RATIO)
+                                 tau*s.GRAIN_STRESS_FACTOR*exposed_height*lift)
                 self.force[i] *= self.physics.area_width[i]
             self.points[i] = (xs[start:end][visible].mean(), zmax-exposed_height/2)
         self.envelope_x = xs
@@ -434,37 +439,37 @@ class StreamForces:
                     self.points[i, 1] = min(zmax, h.water_level)-wet_height/2
             # Exact circular segment / spherical cap submergence. Rotated
             # prisms use polygon clipping at the fixed water plane.
-            self.buoyancy[:] = self.full_buoyancy
-            for i in np.flatnonzero(self.active):
+            self.buoyancy[:] = self.full_buoyancy if s.SIMULATE_BUOYANCY else 0.
+            ids = np.flatnonzero(self.active & self._circles)
+            radius = self._sizes[ids]/2
+            height = np.clip(h.water_level-pos[ids, 1]+radius, 0., 2*radius)
+            if self.physics.pymunk:
+                fraction = (radius**2*np.arccos(np.clip((radius-height)/radius, -1., 1.))
+                            -(radius-height)*np.sqrt(np.maximum(0., 2*radius*height-height**2)))/(math.pi*radius**2)
+            else:
+                fraction = height**2*(3*radius-height)/(4*radius**3)
+            self.buoyancy[ids] *= fraction
+            for i in np.flatnonzero(self.active & ~self._circles):
                 local = b.particle_draw_local_vertices[i]
-                if local is None:
-                    r = b.particle_sizes[i]/2
-                    height = float(np.clip(h.water_level-pos[i, 1]+r, 0, 2*r))
-                    if self.physics.pymunk:
-                        fraction = (r*r*math.acos(np.clip((r-height)/r, -1., 1.))
-                                    -(r-height)*math.sqrt(max(0., 2*r*height-height*height)))/(math.pi*r*r)
-                    else:
-                        fraction = height*height*(3*r-height)/(4*r**3)
+                ca, sa = math.cos(angles[i]), math.sin(angles[i])
+                verts = np.asarray(local) @ np.array([[ca, sa], [-sa, ca]])+pos[i]
+                if verts[:, 1].max() <= h.water_level:
+                    continue
+                clipped = []
+                for v, w in zip(verts, np.roll(verts, -1, axis=0)):
+                    if v[1] <= h.water_level:
+                        clipped.append(v)
+                    if (v[1] <= h.water_level) != (w[1] <= h.water_level):
+                        clipped.append(v+(w-v)*(h.water_level-v[1])/(w[1]-v[1]))
+                if len(clipped) < 3:
+                    fraction = 0.
                 else:
-                    ca, sa = math.cos(angles[i]), math.sin(angles[i])
-                    verts = np.asarray(local) @ np.array([[ca, sa], [-sa, ca]])+pos[i]
-                    if verts[:, 1].max() <= h.water_level:
-                        continue
-                    clipped = []
-                    for v, w in zip(verts, np.roll(verts, -1, axis=0)):
-                        if v[1] <= h.water_level:
-                            clipped.append(v)
-                        if (v[1] <= h.water_level) != (w[1] <= h.water_level):
-                            clipped.append(v+(w-v)*(h.water_level-v[1])/(w[1]-v[1]))
-                    if len(clipped) < 3:
-                        fraction = 0.
-                    else:
-                        polygon = np.asarray(clipped)
-                        area = .5*abs(np.dot(polygon[:, 0], np.roll(polygon[:, 1], 1))
-                                     -np.dot(polygon[:, 1], np.roll(polygon[:, 0], 1)))
-                        fraction = min(1., area/b.particle_planform_areas[i])
+                    polygon = np.asarray(clipped)
+                    area = .5*abs(np.dot(polygon[:, 0], np.roll(polygon[:, 1], 1))
+                                 -np.dot(polygon[:, 1], np.roll(polygon[:, 0], 1)))
+                    fraction = min(1., area/b.particle_planform_areas[i])
                 self.buoyancy[i] *= fraction
-            u, w, self.local_stress = h.sample(self.points)
+            u, w, self.local_stress = h.sample(self.points, roughness_height=.5*h.d84)
             self.grain_velocity = np.column_stack((u, w))
             self.current_stress = float(np.trapezoid(h.tau, h.x)/s.DOMAIN_X)
             if s.HYDRAULIC_LOAD == "drag":
@@ -478,12 +483,18 @@ class StreamForces:
                     self.drag_coefficient *= np.divide(self.local_stress, base, out=np.ones(len(base)), where=base > 0)
                 self.drag_coefficient[self.points[:, 1] > h.water_level] = 0.
                 self.force = self.drag_coefficient[:, None]*speed[:, None]*relative
-                self.force[:, 1] += s.STREAM_LIFT_RATIO*np.abs(self.force[:, 0])
+                if s.SIMULATE_LIFT:
+                    self.force[:, 1] += s.STREAM_LIFT_RATIO*np.abs(self.force[:, 0])
             else:
                 horizontal = self.local_stress*s.GRAIN_STRESS_FACTOR*exposed_area
-                self.force = np.column_stack((horizontal, s.STREAM_LIFT_RATIO*horizontal))
-            # No fluid drag on grains above the specified water surface.
-            self.force[self.points[:, 1] > h.water_level] = 0.
+                lift = s.STREAM_LIFT_RATIO if s.SIMULATE_LIFT else 0.
+                self.force = np.column_stack((horizontal, lift*horizontal))
+            # No momentum exchange for inactive/dry grains, or disabled fluid loading.
+            unloaded = ~self.active | (self.points[:, 1] > h.water_level)
+            if not s.SIMULATE_HYDRAULIC_FORCES:
+                unloaded[:] = True
+            self.drag_coefficient[unloaded] = 0.
+            self.force[unloaded] = 0.
             if not np.isfinite(self.force).all() or not np.isfinite(h.tau).all():
                 raise ValueError("Hydraulic loads are non-finite. Reduce velocity, stress or turbulence amplitude.")
             self.explicit_force = self.force.copy()
@@ -491,13 +502,20 @@ class StreamForces:
     def prepare_step(self, dt):
         """Effective, torque-aware drag force for the proposed substep."""
         s = self.s
-        if s.HYDRAULIC_LOAD == "drag" and s.STREAM_DRAG_INTEGRATION == "implicit":
+        if not s.SIMULATE_HYDRAULIC_FORCES:
+            self.force.fill(0.)
+        elif s.HYDRAULIC_LOAD == "drag" and s.STREAM_DRAG_INTEGRATION == "implicit":
             self.force = implicit_drag_force(self.drag_relative, self.drag_coefficient,
                                              self.physics.masses, self.physics.inertias, self.lever, dt)
-            self.force[:, 1] += s.STREAM_LIFT_RATIO*np.abs(self.force[:, 0])
+            if s.SIMULATE_LIFT:
+                self.force[:, 1] += s.STREAM_LIFT_RATIO*np.abs(self.force[:, 0])
         else:
             self.force = self.explicit_force.copy()
         return self.force
+
+    def accumulate_exchange(self, dt):
+        """Equal/opposite reaction on the prescribed-flow reservoir (N s or N s/m)."""
+        self.fluid_impulse -= dt*np.sum(self.force[self.active], axis=0)
 
     def open_outlet(self):
         self.update(0.)
@@ -614,7 +632,7 @@ def run_stream_simulation(s, progress_callback=None, save_video=False, return_da
     frames = {k: [] for k in ("pos", "vel", "block_ang", "active", "exposure", "force", "time",
                               "stress", "pct", "exit", "ke", "coord", "bed_area",
                               "recirculated", "displacement", "barrier_height", "hydraulics", "dt",
-                              "pending", "queued", "pos3d")}
+                              "pending", "queued", "pos3d", "fluid_impulse", "fluid_reaction")}
     steps = int(math.ceil(s.STREAM_DURATION/s.DT))
     cancelled = False
     calculation_start = time.perf_counter()
@@ -633,6 +651,8 @@ def run_stream_simulation(s, progress_callback=None, save_video=False, return_da
                                np.column_stack((pos[:, 0], np.zeros(n), pos[:, 1])))
         frames["exposure"].append(forcing.exposure.copy())
         frames["force"].append(forcing.force.copy())
+        frames["fluid_impulse"].append(forcing.fluid_impulse.copy())
+        frames["fluid_reaction"].append(-np.sum(forcing.force[forcing.active], axis=0))
         frames["time"].append(t)
         frames["stress"].append(forcing.current_stress)
         frames["hydraulics"].append(forcing.hydraulics.snapshot())
@@ -707,6 +727,7 @@ def run_stream_simulation(s, progress_callback=None, save_video=False, return_da
             break
         forcing.apply()
         backend.step(dt)
+        forcing.accumulate_exchange(dt)
         actual_timesteps.append(dt)
         t = min(s.STREAM_DURATION, t+dt)
         computational_step += 1
@@ -763,13 +784,16 @@ def run_stream_simulation(s, progress_callback=None, save_video=False, return_da
                f"Stream contact travel fraction: {s.STREAM_CONTACT_TRAVEL_FRACTION:g} of local grain thickness.\n"
                f"Adaptive dt: {s.ADAPTIVE_DT}; {len(actual_timesteps)} flow steps; "
                f"range {min(actual_timesteps, default=0):.6g} to {max(actual_timesteps, default=0):.6g} s.\n"
-               "Hydraulics are equilibrium 1DV columns, with fixed stage and discharge in velocity mode.\n"
+               "Hydraulics are equilibrium 1DV columns with fixed stage and common discharge.\n"
+               "Mean vertical velocity follows continuity over the bed; stress inputs refer to the initial depth.\n"
+               "Fluid reaction impulse is recorded against the prescribed-flow reservoir (excluding buoyancy).\n"
                "No streamwise momentum/free-surface solve, resolved eddies or HEC-RAS coupling.\n"
                "Synthetic fluctuations and drag/traction/lift closures need experimental calibration.\n"
                "Barrier height follows the bed-connected mean surface.\n"
                + ("Loads are N/m and KE is J/m.\n" if forcing.physics.pymunk else "Loads are N and KE is J; sphere/prism projected area is used.\n"))
     if getattr(backend, "engine_fallback_reason", None):
         summary += f"Requested {backend.requested_engine}; used {s.ENGINE}: {backend.engine_fallback_reason}\n"
+    summary += "Particle physics: " + ", ".join(f"{k}={getattr(s, k)}" for k in s._PARTICLE_PHYSICS_FIELDS) + "\n"
     summary += "Numerical controls: " + ", ".join(f"{k}={getattr(s, k)}" for k in s._SOLVER_FIELDS) + "\n"
     summary += (f"Recording: {schedule.mode}; {nf} frames, actual saved window {times[0]:.6g} to {times[-1]:.6g} s; "
                 f"requested {schedule.start:g} to {schedule.stop:g} s.\n"
@@ -787,6 +811,8 @@ def run_stream_simulation(s, progress_callback=None, save_video=False, return_da
                 total_rotation=0., settle_time=s.SETTLE_TIME, sim_duration=s.STREAM_DURATION, fps=s.FPS,
                 frames_pos=frames["pos"], frames_vel=frames["vel"], frames_block_ang=frames["block_ang"],
                 frames_active=frames["active"], frames_exposure=frames["exposure"], frames_force=frames["force"],
+                frames_fluid_impulse=frames["fluid_impulse"], frames_fluid_reaction=frames["fluid_reaction"],
+                particle_physics_parameters={k: getattr(s, k) for k in s._PARTICLE_PHYSICS_FIELDS},
                 frames_pending=frames["pending"], arr_pending=np.asarray(frames["queued"]),
                 frames_pos3d=frames["pos3d"],
                 arr_total_retained_area=np.asarray([float(areas[a | p].sum()) for a, p in zip(frames["active"], frames["pending"])]),
