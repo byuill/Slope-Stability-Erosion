@@ -27,12 +27,28 @@ def implicit_drag_force(relative, coefficient, mass, inertia, lever, dt):
     rt = np.sum(r*tangent, axis=1)
     wn, wt = 1/m, 1/m+length**2/moment
     lo = np.zeros(len(r))
-    hi = dt*k*np.linalg.norm(r, axis=1)
-    for _ in range(45):
-        alpha = .5*(lo+hi)
-        speed = np.hypot(rn/(1+alpha*wn), rt/(1+alpha*wt))
-        below = alpha < dt*k*speed
-        lo, hi = np.where(below, alpha, lo), np.where(below, hi, alpha)
-    alpha = .5*(lo+hi)
+    magnitude = np.hypot(rn, rt)
+    hi = dt*k*magnitude
+    # Exact isotropic response (zero lever), also a good first guess for
+    # torque-bearing grains. Rationalization is stable for weak drag.
+    alpha = 2*hi/(1+np.sqrt(1+4*hi*wn))
+    isotropic = wt == wn
+    for _ in range(64):
+        dn, dtangent = 1+alpha*wn, 1+alpha*wt
+        un, ut = rn/dn, rt/dtangent
+        speed = np.hypot(un, ut)
+        residual = alpha-dt*k*speed
+        tolerance = 1e-11*np.maximum(np.maximum(alpha, dt*k*speed), 1e-30)
+        done = isotropic | (np.abs(residual) <= tolerance)
+        if np.all(done):
+            break
+        derivative = 1+dt*k*np.divide(un*un*wn/dn+ut*ut*wt/dtangent, speed,
+                                      out=np.zeros_like(speed), where=speed > 0)
+        lo, hi = np.where(residual < 0, alpha, lo), np.where(residual >= 0, alpha, hi)
+        candidate = alpha-residual/derivative
+        inside = (candidate > lo) & (candidate < hi)
+        alpha = np.where(done, alpha, np.where(inside, candidate, .5*(lo+hi)))
+    else:
+        raise ValueError("Implicit drag impulse did not converge.")
     updated = rn[:, None]*normal/(1+alpha*wn)[:, None]+rt[:, None]*tangent/(1+alpha*wt)[:, None]
     return alpha[:, None]*updated/dt
