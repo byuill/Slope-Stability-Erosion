@@ -28,6 +28,43 @@
         "url": "https://ui.adsabs.harvard.edu/abs/2007AGUFM.H53C1401G/abstract",
         "status": "secondary"
       },
+      "zadrozny_2017_spruce": {
+        "value": {
+          "finding": "root-plate height and slope steepness are good predictors of the volume of dislocated soil (redundancy analysis, 75 microsites, old-growth Picea abies, Babia Gora National Park, Poland)"
+        },
+        "source": "Zadro\u017cny et al. (2017) iForest 10:783-787, doi:10.3832/ifor1959-010",
+        "url": "https://iforest.sisef.org/contents/?id=ifor1959-010",
+        "status": "secondary (abstract via search; full text not reachable)"
+      },
+      "pawlik_2016_sudetes_root_plate": {
+        "value": {
+          "spruce_site_mean_min_m3": 0.4,
+          "spruce_site_mean_max_m3": 4.2,
+          "beech_mean_m3": 2.4
+        },
+        "source": "Pawlik et al. (2016) ESPL, Sudetes Mountains, doi:10.1002/esp.3950",
+        "url": "https://onlinelibrary.wiley.com/doi/10.1002/esp.3950",
+        "status": "secondary"
+      },
+      "carpathian_root_plate": {
+        "value": {
+          "mean_min_m3": 2.2,
+          "mean_max_m3": 3.35
+        },
+        "source": "Uprooting study, Polish Carpathians (as summarised in search results; citation to confirm)",
+        "url": "https://www.researchgate.net/publication/309006609_Domination_of_hillslope_denudation_by_tree_uprooting_in_an_old-growth_forest",
+        "status": "secondary (citation unconfirmed)"
+      },
+      "spruce_40cm_dbh_volume": {
+        "value": {
+          "dbh_cm": 40,
+          "volume_m3": 1.0,
+          "sd_m3": 0.25
+        },
+        "source": "Review estimate for a ~100-150-yr-old Norway spruce (as summarised in search results; citation to confirm)",
+        "url": "https://doi.org/10.3390/f11111143",
+        "status": "secondary (citation unconfirmed)"
+      },
       "doane_2021_flux_share": {
         "value": {
           "share_min": 0.11,
@@ -85,7 +122,7 @@
       5
     ],
     "quick": false,
-    "runtime_s": 50.224554777145386,
+    "runtime_s": 47.60425019264221,
     "config": {
       "length": 40.0,
       "width": 40.0,
@@ -144,6 +181,8 @@
         "n_events": 1768,
         "mean_m3": 2.4674376374657543,
         "median_m3": 1.9425005922829992,
+        "within_sudetes_spruce_site_means": true,
+        "ratio_to_spruce_40cm_dbh": 2.4674376374657543,
         "p5_m3": 0.6299302561325548,
         "p95_m3": 6.094369694797891,
         "max_m3": 19.597737391434965,
@@ -156,6 +195,8 @@
         "n_events": 1233,
         "mean_m3": 3.5859401792861263,
         "median_m3": 2.6386504875811405,
+        "ratio_to_sudetes_beech_mean": 1.4941417413692193,
+        "within_carpathian_mean_range": false,
         "p5_m3": 0.6789905124781616,
         "p95_m3": 10.006847847515397,
         "max_m3": 29.592811797116784,

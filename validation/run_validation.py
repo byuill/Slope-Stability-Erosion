@@ -63,6 +63,33 @@ BENCHMARKS = {
         "url": "https://ui.adsabs.harvard.edu/abs/2007AGUFM.H53C1401G/abstract",
         "status": "secondary",
     },
+    "zadrozny_2017_spruce": {
+        "value": {"finding": "root-plate height and slope steepness are good predictors of the volume "
+                             "of dislocated soil (redundancy analysis, 75 microsites, old-growth Picea abies, "
+                             "Babia Gora National Park, Poland)"},
+        "source": "Zadrożny et al. (2017) iForest 10:783-787, doi:10.3832/ifor1959-010",
+        "url": "https://iforest.sisef.org/contents/?id=ifor1959-010",
+        "status": "secondary (abstract via search; full text not reachable)",
+    },
+    "pawlik_2016_sudetes_root_plate": {
+        "value": {"spruce_site_mean_min_m3": 0.4, "spruce_site_mean_max_m3": 4.2, "beech_mean_m3": 2.4},
+        "source": "Pawlik et al. (2016) ESPL, Sudetes Mountains, doi:10.1002/esp.3950",
+        "url": "https://onlinelibrary.wiley.com/doi/10.1002/esp.3950",
+        "status": "secondary",
+    },
+    "carpathian_root_plate": {
+        "value": {"mean_min_m3": 2.2, "mean_max_m3": 3.35},
+        "source": "Uprooting study, Polish Carpathians (as summarised in search results; citation to confirm)",
+        "url": "https://www.researchgate.net/publication/309006609_Domination_of_hillslope_denudation_by_tree_uprooting_in_an_old-growth_forest",
+        "status": "secondary (citation unconfirmed)",
+    },
+    "spruce_40cm_dbh_volume": {
+        "value": {"dbh_cm": 40, "volume_m3": 1.0, "sd_m3": 0.25},
+        "source": "Review estimate for a ~100-150-yr-old Norway spruce (as summarised in search results; "
+                  "citation to confirm)",
+        "url": "https://doi.org/10.3390/f11111143",
+        "status": "secondary (citation unconfirmed)",
+    },
     "doane_2021_flux_share": {
         "value": {"share_min": 0.11, "share_max": 0.18,
                   "aspect_effect": "~50 % higher tree-throw flux on east-facing slopes"},
@@ -177,7 +204,16 @@ def test_event_volume(res_species):
         mean = float(vols.mean())
         inside = float(np.mean((vols >= b["min_m3"]) & (vols <= b["max_m3"])))
         ok = abs(mean / b["mean_m3"] - 1) <= 0.5
-        out[key] = {"n_events": int(vols.size), "mean_m3": mean, "median_m3": float(p50),
+        extra = {}
+        if key == "deciduous":
+            extra["ratio_to_sudetes_beech_mean"] = mean / BENCHMARKS["pawlik_2016_sudetes_root_plate"]["value"]["beech_mean_m3"]
+            cb = BENCHMARKS["carpathian_root_plate"]["value"]
+            extra["within_carpathian_mean_range"] = bool(cb["mean_min_m3"] <= mean <= cb["mean_max_m3"])
+        if key == "pine":
+            ps = BENCHMARKS["pawlik_2016_sudetes_root_plate"]["value"]
+            extra["within_sudetes_spruce_site_means"] = bool(ps["spruce_site_mean_min_m3"] <= mean <= ps["spruce_site_mean_max_m3"])
+            extra["ratio_to_spruce_40cm_dbh"] = mean / BENCHMARKS["spruce_40cm_dbh_volume"]["value"]["volume_m3"]
+        out[key] = {"n_events": int(vols.size), "mean_m3": mean, "median_m3": float(p50), **extra,
                     "p5_m3": float(p5), "p95_m3": float(p95), "max_m3": float(vols.max()),
                     "fraction_within_published_range": inside,
                     "ratio_to_benchmark_mean": mean / b["mean_m3"],
@@ -458,7 +494,17 @@ def write_report(R, runtime, quick):
                  f"{v0[k]['ratio_mean']:.2f} ± {v0[k]['ratio_se']:.2f} (SE) | {v0[k]['verdict']} |")
     for k in ("deciduous", "pine"):
         L.append(f"| V1 mean event volume ({k}) | 2.8 m³ (Boubín) | {v1[k]['mean_m3']:.2f} m³ | {v1[k]['verdict']} |")
-    L.append(f"| V2 event volume increases with slope | yes (Norman 1995; Gallaway 2009) | "
+    d, pn = v1["deciduous"], v1["pine"]
+    L.append(f"| V1b deciduous vs. Sudetes beech root plates | 2.4 m³ (Pawlik 2016) | {d['mean_m3']:.2f} m³ "
+             f"(×{d['ratio_to_sudetes_beech_mean']:.2f}) | {verdict(abs(d['ratio_to_sudetes_beech_mean'] - 1) <= 0.5)} |")
+    L.append(f"| V1b deciduous vs. Carpathian root plates | 2.2–3.35 m³ | {d['mean_m3']:.2f} m³ | "
+             f"{verdict(d['within_carpathian_mean_range'], partial=d['mean_m3'] <= 1.5 * 3.35)} |")
+    L.append(f"| V1b pine vs. Sudetes spruce site means (conifer proxy) | 0.4–4.2 m³ (Pawlik 2016) | "
+             f"{pn['mean_m3']:.2f} m³ | {verdict(pn['within_sudetes_spruce_site_means'])} |")
+    L.append(f"| V1b pine vs. 40 cm DBH spruce (conifer proxy) | 1.0 ± 0.25 m³ | {pn['mean_m3']:.2f} m³ "
+             f"(×{pn['ratio_to_spruce_40cm_dbh']:.1f}) | "
+             f"{verdict(abs(pn['ratio_to_spruce_40cm_dbh'] - 1) <= 0.5)} |")
+    L.append(f"| V2 event volume increases with slope | yes (Norman 1995; Gallaway 2009; Zadrożny 2017) | "
              f"{100 * v2['event_volume_fractional_trend_per_unit_slope']:+.0f} % per unit gradient | "
              f"{v2['verdict_volume_increases_with_slope']} |")
     L.append(f"| V2 tree-throw flux increases with slope | yes | "
