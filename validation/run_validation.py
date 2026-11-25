@@ -33,6 +33,8 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import TreeThrow as tt  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import zadrozny  # noqa: E402
 
 OUT = Path(__file__).resolve().parent / "results"
 
@@ -64,12 +66,13 @@ BENCHMARKS = {
         "status": "secondary",
     },
     "zadrozny_2017_spruce": {
-        "value": {"finding": "root-plate height and slope steepness are good predictors of the volume "
-                             "of dislocated soil (redundancy analysis, 75 microsites, old-growth Picea abies, "
-                             "Babia Gora National Park, Poland)"},
-        "source": "Zadrożny et al. (2017) iForest 10:783-787, doi:10.3832/ifor1959-010",
+        "value": {"pit_1yr_LxWxD_m": [2.74, 4.23, 0.95],
+                  "pit_depth_vs_root_plate_height": "depth = -0.3758*PR + 2.049, R2 = 0.64",
+                  "finding": "slope steepness has the largest influence on soil dislocation (RDA)"},
+        "source": "Zadrożny et al. (2017) iForest 10:783-787, doi:10.3832/ifor1959-010 "
+                  "(see validation/zadrozny.py for Table 1)",
         "url": "https://iforest.sisef.org/contents/?id=ifor1959-010",
-        "status": "secondary (abstract via search; full text not reachable)",
+        "status": "primary (full text read)",
     },
     "pawlik_2016_sudetes_root_plate": {
         "value": {"spruce_site_mean_min_m3": 0.4, "spruce_site_mean_max_m3": 4.2, "beech_mean_m3": 2.4},
@@ -527,6 +530,7 @@ def write_report(R, runtime, quick):
     L.append(f"| V6 mound persistence, default D = 1×10⁻³ m²/yr | 200–250 yr (Jura) | "
              f"{fmt(r0['time_to_half_height_yr'], 0)} yr to half height; "
              f"{fmt(r0['time_to_5cm_yr'], 0)} yr to < 5 cm | {v6['verdict_default_D']} |")
+    L.extend(zadrozny.scorecard_rows(R["Z_zadrozny_2017"], v2))
     L.append("")
 
     L.append("## Details\n")
@@ -590,6 +594,9 @@ def write_report(R, runtime, quick):
              f"if it means decaying below 5 cm. "
              f"Martin et al. (2013) inferred 0.01–0.1 m²/yr for pit-mound degradation in the Canadian Rockies.\n")
 
+    L.extend(zadrozny.detail_lines(R["Z_zadrozny_2017"]))
+    L.append("![zadrozny](zadrozny_validation.png)\n")
+
     L.append("## Benchmarks used\n")
     L.append("| key | value | source | status |")
     L.append("|---|---|---|---|")
@@ -639,13 +646,23 @@ def main(argv=None):
     R["V5_rate_coverage"] = test_rate_coverage(res_species, res_razula)
     R["V5_rate_coverage"]["razula_density_stems_per_ha"] = dens
     R["V6_mound_persistence"] = test_mound_persistence(a.quick)
+    print("Running Zadrożny et al. (2017) comparison ...", flush=True)
+    R["Z_zadrozny_2017"] = {
+        "Z1_geometry": zadrozny.test_geometry(R["V1_event_volume"]),
+        "Z2_size_depth": zadrozny.test_size_depth_relation(),
+        "Z4_degradation": zadrozny.test_degradation(),
+    }
     R["_vols"] = {k: np.concatenate([np.array(r["event_volume"]) for r in res_species if r["species"] == k]).tolist()
                   for k in tt.SPECIES}
 
     make_figures(R)
+    zadrozny.plot(R["Z_zadrozny_2017"], OUT / "zadrozny_validation.png")
     runtime = time.time() - t0
     write_report(R, runtime, a.quick)
     R.pop("_vols")
+    for k in ("pine", "deciduous"):
+        for f in ("sample_diam", "sample_depth"):
+            R["Z_zadrozny_2017"]["Z2_size_depth"][k].pop(f, None)
     meta = {"benchmarks": BENCHMARKS, "seeds": list(seeds), "quick": a.quick, "runtime_s": runtime,
             "config": base_cfg(a.quick)}
     with open(OUT / "validation_results.json", "w", encoding="utf-8") as fh:
