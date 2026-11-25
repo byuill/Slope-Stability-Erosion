@@ -22,7 +22,7 @@ def model(species="pine", **changes):
 
 class SpeciesTests(unittest.TestCase):
     def test_builtin_species_are_valid_and_distinct(self):
-        self.assertEqual(set(tt.SPECIES), {"pine", "deciduous", "aspen"})
+        self.assertEqual(set(tt.SPECIES), {"pine", "deciduous", "aspen", "spruce"})
         for sp in tt.SPECIES.values():
             sp.validate()
         sp = tt.SPECIES
@@ -30,6 +30,15 @@ class SpeciesTests(unittest.TestCase):
         self.assertLess(sp["aspen"].lifespan_mean, sp["pine"].lifespan_mean)
         self.assertGreater(sp["deciduous"].root_plate_diameter, sp["pine"].root_plate_diameter)
         self.assertGreater(sp["pine"].root_plate_depth, sp["deciduous"].root_plate_depth)
+        self.assertGreater(sp["spruce"].root_plate_diameter, sp["deciduous"].root_plate_diameter)
+        for s in sp.values():
+            self.assertLess(s.size_depth_correlation, 0)
+            self.assertGreater(s.pit_aspect, 1)
+
+    def test_size_depth_anticorrelated(self):
+        rng = np.random.default_rng(0)
+        r, h = tt.draw_mature_sizes(rng, tt.SPECIES["spruce"], 50000)
+        self.assertLess(np.corrcoef(np.log(r), np.log(h))[0, 1], -0.7)
 
     def test_invalid_species_rejected(self):
         bad = tt.TreeSpecies(**{**tt.SPECIES["pine"].__dict__, "uproot_fraction": 1.5})
@@ -58,14 +67,34 @@ class UprootTests(unittest.TestCase):
         self.assertAlmostEqual(ev["volume"], 0.5 * math.pi * R * R * H, places=10)
         self.assertAlmostEqual(np.sum(m.z - z0) * m.cell_area, 0.0, places=10)
         self.assertEqual(ev["export"], 0.0)
-        # Soil centroid moves about R + H/3 downslope.
-        self.assertAlmostEqual(ev["moment"] / ev["volume"], R + H / 3, delta=m.cfg.dx)
+        # Soil centroid moves about a + H/3 downslope, a = semi-axis along the fall line.
+        a = R / math.sqrt(m.sp.pit_aspect)
+        self.assertAlmostEqual(ev["moment"] / ev["volume"], a + H / 3, delta=0.1)
         self.assertLess(m.z[int(10.0 / m.cfg.dx), int(5.0 / m.cfg.dx)], z0[int(10.0 / m.cfg.dx), int(5.0 / m.cfg.dx)])
 
     def test_infill_reduces_transport(self):
-        a = model(soil_model=False, infill_fraction=0.0).uproot(10.0, 5.0, 1.0, 0.6, 0.0)
-        b = model(soil_model=False, infill_fraction=0.5).uproot(10.0, 5.0, 1.0, 0.6, 0.0)
+        a = model(soil_model=False, infill_fraction=0.0).uproot(10.0, 5.0, 1.0, 0.6, 0.0, s_fall=0.0)
+        b = model(soil_model=False, infill_fraction=0.5).uproot(10.0, 5.0, 1.0, 0.6, 0.0, s_fall=0.0)
         self.assertAlmostEqual(b["moment"], 0.5 * a["moment"], delta=0.05 * a["moment"])
+
+    def test_infill_depends_on_fall_direction(self):
+        down = model(soil_model=False, infill_fraction=0.3).uproot(10.0, 5.0, 1.0, 0.6, 0.0)
+        up = model(soil_model=False, infill_fraction=0.3).uproot(10.0, 5.0, 1.0, 0.6, math.pi)
+        self.assertLess(down["infill"], 0.3)
+        self.assertGreater(up["infill"], 0.3)
+        self.assertGreater(down["displaced"], up["displaced"])
+        self.assertAlmostEqual(float(tt.infill_at_slope(0.3, 1.07, 1.07)), 0.0)
+
+    def test_elliptical_pit_volume_and_shape(self):
+        m = model(soil_model=False, infill_fraction=0.0, fresh_diffusivity=0.0)
+        z0 = m.z.copy()
+        ev = m.uproot(10.0, 5.0, 1.2, 0.8, 0.0)
+        self.assertAlmostEqual(ev["volume"], 0.5 * math.pi * 1.2 ** 2 * 0.8, places=10)
+        pit = (m.z - z0) < -0.05
+        rows, cols = np.nonzero(pit)
+        along = (rows.max() - rows.min() + 1) * m.cfg.dx
+        across = (cols.max() - cols.min() + 1) * m.cfg.dx
+        self.assertGreater(across / along, 1.2)
 
     def test_bedrock_plucking_dilates_volume(self):
         m = model(initial_soil_depth=0.3, bedrock_pluck_fraction=0.5, infill_fraction=0.0)
@@ -93,6 +122,38 @@ class UprootTests(unittest.TestCase):
         self.assertEqual(ev["export"], 0.0)
         self.assertAlmostEqual(np.sum(m.z - z0) * m.cell_area, 0.0, places=10)
         self.assertLess(ev["moment"], 0.0)
+
+
+class FreshCollapseTests(unittest.TestCase):
+    def test_fresh_collapse_conserves_volume_and_smooths(self):
+        m = model(soil_model=False, tree_throw=False, diffusivity=0.0, infill_fraction=0.0)
+        z0 = m.z.copy()
+        m.uproot(10.0, 5.0, 1.5, 0.9, 0.0)
+        z1 = m.z.copy()
+        depth1, mound1 = -(z1 - z0).min(), (z1 - z0).max()
+        for _ in range(3):
+            m.step()
+        dz = m.z - z0
+        self.assertAlmostEqual(np.sum(dz) * m.cell_area, 0.0, places=9)
+        self.assertLess(-dz.min(), 0.85 * depth1)
+        self.assertLess(dz.max(), 0.85 * mound1)
+
+    def test_collapse_switches_off_with_age(self):
+        m = model(soil_model=False, tree_throw=False, diffusivity=0.0, fresh_decay_time=1.0)
+        m.uproot(10.0, 5.0, 1.5, 0.9, 0.0)
+        for _ in range(20):
+            m.step()
+        z20 = m.z.copy()
+        m.step()
+        self.assertLess(np.abs(m.z - z20).max(), 1e-6)
+        self.assertEqual(m.fresh_windows, [])
+
+    def test_no_collapse_when_disabled(self):
+        m = model(soil_model=False, tree_throw=False, diffusivity=0.0, fresh_diffusivity=0.0)
+        m.uproot(10.0, 5.0, 1.5, 0.9, 0.0)
+        z1 = m.z.copy()
+        m.step()
+        np.testing.assert_array_equal(m.z, z1)
 
 
 class DiffusionTests(unittest.TestCase):

@@ -35,6 +35,7 @@ sys.path.insert(0, str(ROOT))
 import TreeThrow as tt  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import zadrozny  # noqa: E402
+import doane  # noqa: E402
 
 OUT = Path(__file__).resolve().parent / "results"
 
@@ -94,11 +95,13 @@ BENCHMARKS = {
         "status": "secondary (citation unconfirmed)",
     },
     "doane_2021_flux_share": {
-        "value": {"share_min": 0.11, "share_max": 0.18,
-                  "aspect_effect": "~50 % higher tree-throw flux on east-facing slopes"},
-        "source": "Doane et al. (2021) GRL, doi:10.1029/2021GL094987 (southern Indiana hardwoods)",
+        "value": {"share_min": 0.11, "share_max": 0.18, "R_min": 0.12, "R_max": 0.22,
+                  "aspect_effect": "~50 % higher tree-throw flux on east-facing slopes",
+                  "variance_m2": [0.001, 0.03], "couplet": "mu_A = 0.68 m2, sigma_A2 = 0.05, phi = 0.83"},
+        "source": "Doane et al. (2021) GRL 48, e2021GL094987, doi:10.1029/2021GL094987 "
+                  "(Brown County, southern Indiana hardwoods; see validation/doane.py)",
         "url": "https://agupubs.onlinelibrary.wiley.com/doi/full/10.1029/2021GL094987",
-        "status": "secondary",
+        "status": "primary (full text read)",
     },
     "constantine_2012_flux": {
         "value": {"flux_m2_yr": 2.0e-4, "peak_D_m2_yr": 3.5e-3},
@@ -139,13 +142,15 @@ def _run(job):
     m = tt.TreeThrowModel(sp, cfg)
     m.run(progress=False)
     s = m.summary()
-    ev = np.array(m.event_log) if m.event_log else np.zeros((0, 8))
+    ev = np.array(m.event_log) if m.event_log else np.zeros((0, 9))
     return {
         "species": key, "slope": cfg.slope, "seed": cfg.seed, "overrides": sp_overrides,
         "summary": {k: v for k, v in s.items() if k not in ("species", "config", "expected")},
         "expected": s["expected"],
-        "event_volume": ev[:, 6].tolist(),
+        "event_volume": ev[:, 7].tolist(),          # net displaced volume (excavated minus infill)
+        "excavated_volume": ev[:, 6].tolist(),
         "coverage": pit_mound_coverage(m),
+        "doane_variance": doane.topographic_variance(m),
     }
 
 
@@ -220,8 +225,8 @@ def test_event_volume(res_species):
                     "p5_m3": float(p5), "p95_m3": float(p95), "max_m3": float(vols.max()),
                     "fraction_within_published_range": inside,
                     "ratio_to_benchmark_mean": mean / b["mean_m3"],
-                    "applicable": key in ("deciduous", "pine"),
-                    "verdict": verdict(ok) if key in ("deciduous", "pine") else "N/A (no aspen benchmark)"}
+                    "applicable": key in ("deciduous", "pine", "spruce"),
+                    "verdict": verdict(ok) if key in ("deciduous", "pine", "spruce") else "N/A (no aspen benchmark)"}
     return out
 
 
@@ -279,11 +284,12 @@ def test_flux_magnitude(res_species):
     out = {}
     for key in tt.SPECIES:
         rs = [r for r in res_species if r["species"] == key]
-        q = float(np.mean([r["summary"]["mean_flux_tree_throw_m2_yr"] for r in rs]))
+        q = float(np.mean([r["summary"]["mean_flux_tree_throw_total_m2_yr"] for r in rs]))
+        qc = float(np.mean([r["summary"]["mean_flux_pit_mound_collapse_m2_yr"] for r in rs]))
         qd = float(np.mean([r["summary"]["mean_flux_diffusion_m2_yr"] for r in rs]))
-        D = float(np.mean([r["summary"]["effective_D_tree_throw_m2_yr"] for r in rs]))
+        D = float(np.mean([r["summary"]["effective_D_tree_throw_total_m2_yr"] for r in rs]))
         ratio = q / b["flux_m2_yr"]
-        out[key] = {"q_tt_m2_yr": q, "D_tt_m2_yr": D, "q_tt_over_q_creep": q / qd,
+        out[key] = {"q_tt_m2_yr": q, "q_collapse_m2_yr": qc, "D_tt_m2_yr": D, "q_tt_over_q_creep": q / qd,
                     "ratio_to_constantine_flux": ratio,
                     "ratio_to_constantine_peak_D": D / b["peak_D_m2_yr"],
                     "verdict_vs_constantine": verdict(0.1 <= ratio <= 10, partial=False),
@@ -324,43 +330,47 @@ def test_mound_persistence(quick: bool):
         rel0 = m.z - ref.z
         h0 = float(rel0.max())
         t, hist = 0.0, [(0.0, h0, float(-rel0.min()))]
-        dt = 2.0 if D >= 1e-2 else 10.0
         tmax = 20000.0 if D < 1e-2 else 2000.0
-        t_half = t_5cm = None
+        t_half = t_5cm = t_50cm = None
         while t < tmax:
-            m._diffusion_step(dt)
-            ref._diffusion_step(dt)
+            # Annual steps while fresh soil is collapsing, then longer steps.
+            dt = 1.0 if t < 30 else (10.0 if D < 1e-2 else 2.0)
+            m.step(dt)
+            ref.step(dt)
             t += dt
             rel = m.z - ref.z
             hm, pd = float(rel.max()), float(-rel.min())
             hist.append((t, hm, pd))
             if t_half is None and hm <= 0.5 * h0:
                 t_half = t
+            if t_50cm is None and hm <= bj["mound_height_m"]:
+                t_50cm = t
             if t_5cm is None and hm <= 0.05:
                 t_5cm = t
                 break
         results[f"D={D:g}"] = {"D_m2_yr": D, "initial_mound_height_m": h0,
                                "time_to_half_height_yr": t_half, "time_to_5cm_yr": t_5cm,
+                               "time_to_50cm_yr": t_50cm,
+                               "persistence_50cm_to_5cm_yr": (t_5cm - t_50cm) if (t_5cm and t_50cm is not None) else None,
                                "history": hist[:: max(len(hist) // 200, 1)]}
-    # Linear diffusion: decay time scales as 1/D, so infer D that reproduces the benchmark.
+    # Jura benchmark: a 50 cm mound persists 200-250 yr.  Measure the time from the moment the
+    # model mound is 50 cm high until it is below 5 cm.  This happens after fresh collapse has
+    # ended, so it scales as 1/D and gives the background D that reproduces the benchmark.
     r0 = results[f"D={D0:g}"]
     t_bench = 0.5 * (bj["persistence_yr_min"] + bj["persistence_yr_max"])
-    # "Persistence" is not defined unambiguously in the benchmark, so test two readings:
-    # (a) time for the mound to lose half its height, (b) time until it is < 5 cm high.
-    D_implied = D0 * r0["time_to_5cm_yr"] / t_bench
-    D_implied_half = D0 * r0["time_to_half_height_yr"] / t_bench
+    pers = r0["persistence_50cm_to_5cm_yr"]
+    D_implied = D0 * pers / t_bench if pers else None
     bm = BENCHMARKS["martin_2013_pitmound_D"]["value"]
     lo, hi = bj["persistence_yr_min"] / 2, bj["persistence_yr_max"] * 2
-    ok_half = lo <= r0["time_to_half_height_yr"] <= hi
-    ok_5cm = lo <= r0["time_to_5cm_yr"] <= hi
     return {
         "runs": results,
         "root_plate": {"R_m": R, "H_m": H},
         "benchmark_persistence_yr": [bj["persistence_yr_min"], bj["persistence_yr_max"]],
+        "persistence_50cm_to_5cm_yr": pers,
         "D_implied_by_jura_m2_yr": D_implied,
-        "D_implied_by_jura_half_height_m2_yr": D_implied_half,
         "martin_2013_D_range_m2_yr": [bm["D_min_m2_yr"], bm["D_max_m2_yr"]],
-        "verdict_default_D": "PASS" if (ok_half and ok_5cm) else ("PARTIAL" if (ok_half or ok_5cm) else "FAIL"),
+        "verdict_default_D": verdict(pers is not None and lo <= pers <= hi,
+                                     partial=pers is not None and lo / 2 <= pers <= hi * 2),
     }
 
 
@@ -371,7 +381,7 @@ def test_mound_persistence(quick: bool):
 
 def make_figures(R):
     plt = tt._import_pyplot()
-    colors = {"pine": "tab:green", "deciduous": "tab:orange", "aspen": "tab:olive"}
+    colors = {"pine": "tab:green", "deciduous": "tab:orange", "aspen": "tab:olive", "spruce": "tab:blue"}
     fig, ax = plt.subplots(2, 3, figsize=(16, 9.5))
     fig.suptitle("TreeThrow.py — literature validation", fontsize=13)
 
@@ -384,7 +394,7 @@ def make_figures(R):
         a.plot(i + 1, data[i].mean(), "o", color=colors[k])
     a.axhspan(b["min_m3"], b["max_m3"], color="gray", alpha=0.15, label="Boubín range 0.1–5.6 m³")
     a.axhline(b["mean_m3"], color="k", ls="--", lw=1, label="Boubín mean 2.8 m³")
-    a.set(title="V1  Event volume (5–95 %, dot = mean)", ylabel="pit soil volume (m³)")
+    a.set(title="V1  Displaced volume per uprooting (5–95 %, dot = mean)", ylabel="displaced soil (m³)")
     a.legend(fontsize=8)
 
     # V2 slope dependence
@@ -399,7 +409,7 @@ def make_figures(R):
     qe = np.array([r["q_tt_expected_m2_yr"] for r in rows])
     a.plot(S, qe / q.mean(), ":", color="tab:green", label="analytic flux")
     a.axhline(1, color="k", lw=0.5)
-    a.set(title="V2  Slope dependence (deciduous)\nNorman 1995 / Gallaway 2009: volume ↑ with slope",
+    a.set(title="V2  Slope dependence (deciduous)\nNorman 1995 / Gallaway 2009 / Zadrożny 2017: volume ↑ with slope",
           xlabel="gradient (m/m)", ylabel="value / mean")
     a.legend(fontsize=8)
 
@@ -418,7 +428,8 @@ def make_figures(R):
     a = ax[1, 0]
     v4 = R["V4_flux_magnitude"]
     ks = list(tt.SPECIES)
-    a.bar(ks, [v4[k]["q_tt_m2_yr"] for k in ks], color=[colors[k] for k in ks], label="model q_tt (S=0.35)")
+    a.bar(ks, [v4[k]["q_tt_m2_yr"] for k in ks], color=[colors[k] for k in ks],
+          label="model q_tt incl. collapse (S=0.35)")
     bc = BENCHMARKS["constantine_2012_flux"]["value"]["flux_m2_yr"]
     a.axhline(bc, color="k", ls="--", label="Constantine 2012 ≈ 2×10⁻⁴")
     qd = np.mean([v4[k]["q_tt_m2_yr"] / v4[k]["q_tt_over_q_creep"] for k in ks])
@@ -476,6 +487,67 @@ def fmt(x, p=2):
     return f"{x:.{p}f}" if isinstance(x, float) else str(x)
 
 
+def _get(d, *path):
+    for k in path:
+        if not isinstance(d, dict) or k not in d:
+            return None
+        d = d[k]
+    return d
+
+
+BASELINE_METRICS = [
+    ("V1 mean displaced volume, deciduous (m³)", ("V1_event_volume", "deciduous", "mean_m3"), "{:.2f}", "≈ 2.4–2.8"),
+    ("V1 mean displaced volume, pine (m³)", ("V1_event_volume", "pine", "mean_m3"), "{:.2f}", "≈ 2.8"),
+    ("V2 displaced volume trend with slope (% per unit gradient)",
+     ("V2_slope_dependence", "event_volume_fractional_trend_per_unit_slope"), "pct", "> 0"),
+    ("V3 tree-throw share of flux, deciduous", ("V3_flux_share", "share_by_species_at_S0.35", "deciduous"),
+     "pct", "11–18 %"),
+    ("V4 tree-throw flux, deciduous (m²/yr)", ("V4_flux_magnitude", "deciduous", "q_tt_m2_yr"), "{:.1e}", "2×10⁻⁴"),
+    ("V5 uprooting rate, deciduous (/ha/yr)", ("V5_rate_coverage", "deciduous", "uprootings_per_ha_yr"), "{:.2f}", "1.5"),
+    ("V5 pit-mound cover > 10 cm, deciduous", ("V5_rate_coverage", "deciduous", "cover", "10cm"), "pct", "> 14 %"),
+    ("V5 pit-mound cover > 10 cm at Razula rate", ("V5_rate_coverage", "deciduous_at_razula_rate", "cover", "10cm"),
+     "pct", "> 14 %"),
+    ("V6 fresh mound half-height time (yr)", ("V6_mound_persistence", "runs", "D=0.001", "time_to_half_height_yr"),
+     "{:.0f}", "≈ 2–3 (Zadrożny mound 0.71→0.42 m in 2 yr)"),
+    ("Z2 size–depth correlation, pine", ("Z_zadrozny_2017", "Z2_size_depth", "pine", "r_model"), "{:+.2f}", "−0.80"),
+]
+
+
+def baseline_comparison(R):
+    path = OUT / "baseline_results.json"
+    if not path.exists():
+        return []
+    base = json.loads(path.read_text(encoding="utf-8"))["results"]
+    L = ["## Change from the previous model\n",
+         "Baseline: the model and suite before the root-plate, infill and pit-mound-collapse changes "
+         "(`baseline_results.json`). Pit depth after 3 / 5 yr is shown relative to the 1-yr pit.\n",
+         "| metric | literature | previous model | updated model |", "|---|---|---|---|"]
+
+    def f(v, fmt):
+        if v is None:
+            return "—"
+        return f"{100 * v:.0f} %" if fmt == "pct" else fmt.format(v)
+
+    for label, p, fmt, lit in BASELINE_METRICS:
+        L.append(f"| {label} | {lit} | {f(_get(base, *p), fmt)} | {f(_get(R, *p), fmt)} |")
+    def persistence(runs):
+        h = np.array(_get(runs, "runs", "D=0.001", "history") or [])
+        if not len(h):
+            return None
+        t50 = h[np.argmax(h[:, 1] <= 0.5), 0] if (h[:, 1] <= 0.5).any() else None
+        t5 = h[np.argmax(h[:, 1] <= 0.05), 0] if (h[:, 1] <= 0.05).any() else None
+        return (t5 - t50) if (t5 is not None and t50 is not None) else None
+    pb, pn = persistence(base.get("V6_mound_persistence", {})), R["V6_mound_persistence"]["persistence_50cm_to_5cm_yr"]
+    L.append(f"| V6 persistence of a 50 cm mound to < 5 cm (yr) | 200–250 | {f(pb, '{:.0f}')} | {f(pn, '{:.0f}')} |")
+    old = _get(base, "Z_zadrozny_2017", "Z4_degradation", "pred_default_D", "pit")
+    new = R["Z_zadrozny_2017"]["Z4_degradation"]["comparison"]["pit depth"]
+    if old:
+        L.append(f"| Z4 spruce pit depth at 3 / 5 yr, relative to 1 yr | 0.68 / 0.55 | {old[0]:.2f} / {old[1]:.2f} | "
+                 f"{new[1]['model'] / new[0]['model']:.2f} / {new[2]['model'] / new[0]['model']:.2f} |")
+    L.append("")
+    return L
+
+
 def write_report(R, runtime, quick):
     v0, v1, v2, v3, v4, v5, v6 = (R[k] for k in ("V0_internal", "V1_event_volume", "V2_slope_dependence",
                                                  "V3_flux_share", "V4_flux_magnitude", "V5_rate_coverage",
@@ -484,9 +556,11 @@ def write_report(R, runtime, quick):
     L.append("# TreeThrow.py — validation results\n")
     L.append(f"Generated by `validation/run_validation.py`{' --quick' if quick else ''} "
              f"in {runtime / 60:.1f} min. Figures: `validation_summary.png`; data: `validation_results.json`.\n")
-    L.append("> **Benchmark caveat.** The publishers' websites could not be reached when this suite was built, "
-             "so every benchmark value below comes from abstracts or search summaries (status *secondary*). "
-             "Check them against the original papers before relying on the verdicts.\n")
+    L.append("> **Benchmark caveat.** Zadrożny et al. (2017) (Z rows) and Doane et al. (2021) (D rows, V3) were read "
+             "from the full papers. "
+             "Every other benchmark comes from abstracts or search summaries (status *secondary*) because the "
+             "publishers' websites could not be reached; check them against the original papers before relying "
+             "on those verdicts.\n")
     L.append("![summary](validation_summary.png)\n")
 
     L.append("## Scorecard\n")
@@ -495,8 +569,8 @@ def write_report(R, runtime, quick):
     for k in tt.SPECIES:
         L.append(f"| V0 internal: simulated / analytic D_tt ({k}) | 1.0 | "
                  f"{v0[k]['ratio_mean']:.2f} ± {v0[k]['ratio_se']:.2f} (SE) | {v0[k]['verdict']} |")
-    for k in ("deciduous", "pine"):
-        L.append(f"| V1 mean event volume ({k}) | 2.8 m³ (Boubín) | {v1[k]['mean_m3']:.2f} m³ | {v1[k]['verdict']} |")
+    for k in ("deciduous", "pine", "spruce"):
+        L.append(f"| V1 mean displaced volume ({k}) | 2.8 m³ (Boubín) | {v1[k]['mean_m3']:.2f} m³ | {v1[k]['verdict']} |")
     d, pn = v1["deciduous"], v1["pine"]
     L.append(f"| V1b deciduous vs. Sudetes beech root plates | 2.4 m³ (Pawlik 2016) | {d['mean_m3']:.2f} m³ "
              f"(×{d['ratio_to_sudetes_beech_mean']:.2f}) | {verdict(abs(d['ratio_to_sudetes_beech_mean'] - 1) <= 0.5)} |")
@@ -504,16 +578,15 @@ def write_report(R, runtime, quick):
              f"{verdict(d['within_carpathian_mean_range'], partial=d['mean_m3'] <= 1.5 * 3.35)} |")
     L.append(f"| V1b pine vs. Sudetes spruce site means (conifer proxy) | 0.4–4.2 m³ (Pawlik 2016) | "
              f"{pn['mean_m3']:.2f} m³ | {verdict(pn['within_sudetes_spruce_site_means'])} |")
-    L.append(f"| V1b pine vs. 40 cm DBH spruce (conifer proxy) | 1.0 ± 0.25 m³ | {pn['mean_m3']:.2f} m³ "
-             f"(×{pn['ratio_to_spruce_40cm_dbh']:.1f}) | "
-             f"{verdict(abs(pn['ratio_to_spruce_40cm_dbh'] - 1) <= 0.5)} |")
+    L.append(f"| V1b pine vs. 40 cm DBH spruce (unconfirmed review value) | 1.0 ± 0.25 m³ | {pn['mean_m3']:.2f} m³ "
+             f"(×{pn['ratio_to_spruce_40cm_dbh']:.1f}) | N/A — contradicted by primary spruce data (Z1) |")
     L.append(f"| V2 event volume increases with slope | yes (Norman 1995; Gallaway 2009; Zadrożny 2017) | "
              f"{100 * v2['event_volume_fractional_trend_per_unit_slope']:+.0f} % per unit gradient | "
              f"{v2['verdict_volume_increases_with_slope']} |")
     L.append(f"| V2 tree-throw flux increases with slope | yes | "
              f"{100 * v2['flux_fractional_trend_per_unit_slope']:+.0f} % per unit gradient | "
              f"{v2['verdict_flux_increases_with_slope']} |")
-    L.append(f"| V3 tree-throw share of flux (deciduous, S = 0.35) | 11–18 % (Doane 2021) | "
+    L.append(f"| V3 tree-throw share of flux (deciduous, S = 0.35) | 11–18 % (Doane 2021, primary) | "
              f"{100 * v3['share_by_species_at_S0.35']['deciduous']:.0f} % | {v3['verdict']} |")
     for k in tt.SPECIES:
         L.append(f"| V4 flux within 10× of Constantine 2012 ({k}) | 2×10⁻⁴ m²/yr | "
@@ -523,15 +596,20 @@ def write_report(R, runtime, quick):
              f"{v4['deciduous']['verdict_vs_gallaway_two_orders_below_creep']} |")
     L.append(f"| V5 uprooting rate (deciduous) | 1.5 /ha/yr (Razula) | "
              f"{v5['deciduous']['uprootings_per_ha_yr']:.2f} /ha/yr | {v5['verdict_rate_deciduous']} |")
+    L.append(f"| V5 uprooting rate (spruce) | 1.5 /ha/yr (Razula, mixed beech–fir–spruce) | "
+             f"{v5['spruce']['uprootings_per_ha_yr']:.2f} /ha/yr | "
+             f"{verdict(abs(v5['spruce']['uprootings_per_ha_yr'] / 1.5 - 1) <= 0.5)} |")
     L.append(f"| V5 pit-mound cover at Razula rate | > 14 % | "
              f"{100 * v5['deciduous_at_razula_rate']['cover']['10cm']:.0f} % (>10 cm relief) | "
              f"{v5['verdict_cover_at_razula_rate']} |")
     r0 = v6["runs"]["D=0.001"]
-    L.append(f"| V6 mound persistence, default D = 1×10⁻³ m²/yr | 200–250 yr (Jura) | "
-             f"{fmt(r0['time_to_half_height_yr'], 0)} yr to half height; "
-             f"{fmt(r0['time_to_5cm_yr'], 0)} yr to < 5 cm | {v6['verdict_default_D']} |")
+    L.append(f"| V6 persistence of a 50 cm mound (to < 5 cm), default D | 200–250 yr (Jura) | "
+             f"{fmt(v6['persistence_50cm_to_5cm_yr'], 0)} yr (fresh mound halves in "
+             f"{fmt(r0['time_to_half_height_yr'], 0)} yr) | {v6['verdict_default_D']} |")
     L.extend(zadrozny.scorecard_rows(R["Z_zadrozny_2017"], v2))
+    L.extend(doane.scorecard_rows(R["D_doane_2021"], v3["share_by_species_at_S0.35"]["deciduous"]))
     L.append("")
+    L.extend(baseline_comparison(R))
 
     L.append("## Details\n")
     L.append("### V0 — internal consistency\n")
@@ -584,18 +662,21 @@ def write_report(R, runtime, quick):
     L.append("### V6 — mound persistence\n")
     L.append(f"A single mature deciduous root plate (R = {v6['root_plate']['R_m']:.2f} m, "
              f"H = {v6['root_plate']['H_m']:.2f} m) is uprooted downslope and then left to diffuse.\n")
-    L.append("| D (m²/yr) | initial mound height (m) | time to half height (yr) | time to < 5 cm (yr) |")
-    L.append("|---|---|---|---|")
+    L.append("| D (m²/yr) | initial mound height (m) | time to half height (yr) | time to 50 cm (yr) | time to < 5 cm (yr) |")
+    L.append("|---|---|---|---|---|")
     for name, r in v6["runs"].items():
         L.append(f"| {r['D_m2_yr']:g} | {r['initial_mound_height_m']:.2f} | {fmt(r['time_to_half_height_yr'], 0)} | "
-                 f"{fmt(r['time_to_5cm_yr'], 0)} |")
-    L.append(f"\nD that reproduces the Jura 200–250 yr persistence: **{v6['D_implied_by_jura_half_height_m2_yr']:.1e} m²/yr** "
-             f"if persistence means losing half the mound height, or **{v6['D_implied_by_jura_m2_yr']:.1e} m²/yr** "
-             f"if it means decaying below 5 cm. "
+                 f"{fmt(r['time_to_50cm_yr'], 0)} | {fmt(r['time_to_5cm_yr'], 0)} |")
+    L.append(f"\nThe fresh mound first collapses quickly (fresh-soil diffusivity), then decays by background "
+             f"diffusion. Time for the mound to go from 50 cm to below 5 cm at D = 0.001 m²/yr: "
+             f"**{fmt(v6['persistence_50cm_to_5cm_yr'], 0)} yr** (Jura benchmark 200–250 yr). Background D that "
+             f"would reproduce the benchmark: **{fmt(v6['D_implied_by_jura_m2_yr'], 2)} m²/yr**. "
              f"Martin et al. (2013) inferred 0.01–0.1 m²/yr for pit-mound degradation in the Canadian Rockies.\n")
 
     L.extend(zadrozny.detail_lines(R["Z_zadrozny_2017"]))
     L.append("![zadrozny](zadrozny_validation.png)\n")
+    L.extend(doane.detail_lines(R["D_doane_2021"]))
+    L.append("![doane](doane_validation.png)\n")
 
     L.append("## Benchmarks used\n")
     L.append("| key | value | source | status |")
@@ -648,19 +729,25 @@ def main(argv=None):
     R["V6_mound_persistence"] = test_mound_persistence(a.quick)
     print("Running Zadrożny et al. (2017) comparison ...", flush=True)
     R["Z_zadrozny_2017"] = {
-        "Z1_geometry": zadrozny.test_geometry(R["V1_event_volume"]),
+        "Z1_geometry": zadrozny.test_geometry(),
         "Z2_size_depth": zadrozny.test_size_depth_relation(),
         "Z4_degradation": zadrozny.test_degradation(),
     }
     R["_vols"] = {k: np.concatenate([np.array(r["event_volume"]) for r in res_species if r["species"] == k]).tolist()
                   for k in tt.SPECIES}
 
+    print("Running Doane et al. (2021) comparison ...", flush=True)
+    R["D_doane_2021"] = {
+        "D2_variance": doane.test_variance(res_slope, res_species),
+        "D4_couplet": doane.test_couplet(zadrozny.single_event_series),
+    }
     make_figures(R)
+    doane.plot(R["D_doane_2021"], OUT / "doane_validation.png")
     zadrozny.plot(R["Z_zadrozny_2017"], OUT / "zadrozny_validation.png")
     runtime = time.time() - t0
     write_report(R, runtime, a.quick)
     R.pop("_vols")
-    for k in ("pine", "deciduous"):
+    for k in ("spruce", "pine", "deciduous"):
         for f in ("sample_diam", "sample_depth"):
             R["Z_zadrozny_2017"]["Z2_size_depth"][k].pop(f, None)
     meta = {"benchmarks": BENCHMARKS, "seeds": list(seeds), "quick": a.quick, "runtime_s": runtime,

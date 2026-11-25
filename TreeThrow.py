@@ -26,13 +26,19 @@ hillslope (ridge -> channel) in which soil is moved by two processes:
      * chooses a fall azimuth from a von Mises distribution whose mean and
        concentration combine a downslope bias (proportional to local gradient)
        and an optional prevailing wind,
-     * excavates a paraboloid PIT of radius R and depth H at the stump
-       (limited by soil thickness; a fraction of any root penetration below
-       the soil-bedrock interface plucks bedrock -> biotic soil production),
+     * excavates an elliptical paraboloid PIT at the stump, wider across the
+       fall line than along it (pit_aspect), of equivalent radius R and depth
+       H; wide plates are shallow (negative size-depth correlation).  The pit
+       is limited by soil thickness; a fraction of any root penetration below
+       the soil-bedrock interface plucks bedrock -> biotic soil production,
      * rotates the root plate about a hinge at the pit edge, so the root-wad
-       soil centroid moves ~ R + H/3 in the fall direction, and deposits it as
-       an elliptical MOUND beyond the hinge.  A fraction of the soil falls
-       back into the pit as the wad decays.
+       soil centroid moves ~ a + H/3 in the fall direction (a = semi-axis along
+       the fall line), and deposits it as an elliptical MOUND beyond the
+       hinge.  A fraction of the soil falls back into the pit; it shrinks for
+       falls toward lower ground and grows for falls uphill (Norman et al. 1995),
+     * marks the pit, mound and a margin as FRESH SOIL, which collapses with an
+       extra diffusivity D_f exp(-age / tau) (calibrated to the 1-5 yr pit-mound
+       chronosequence of Zadrożny et al. 2017) before ordinary creep takes over.
 
    The fallen tree is replaced (after an optional regeneration delay) by a
    seedling at a random location, so stand density is held at the species
@@ -43,10 +49,14 @@ thrown over the divide is mirrored back, i.e. a symmetric divide); x = L is a
 channel whose elevation is fixed (or lowers at a set rate) and which removes
 any sediment delivered to it.  The lateral (y) boundaries are periodic.
 
-Three forest types are pre-parameterised (see SPECIES):  'pine',
-'deciduous' and 'aspen'.  The values are representative, literature-informed
-estimates intended as starting points; they should be calibrated against
-field data (stand inventories, pit-mound surveys) for any specific site.
+Four forest types are pre-parameterised (see SPECIES):  'pine',
+'deciduous', 'aspen' and 'spruce'.  The values are representative,
+literature-informed estimates intended as starting points; 'spruce' is
+calibrated to a Norway spruce pit-mound survey and 'deciduous' to published
+root-plate volumes and the southern-Indiana flux share of Doane et al. (2021).
+Calibrate against field data (stand inventories, pit-mound surveys) for any
+specific site.  validation/run_validation.py compares the model with the
+literature.
 
 Key references for the process formulation
 ------------------------------------------
@@ -63,12 +73,16 @@ Key references for the process formulation
 * Constantine, J.A., Schelhaas, M.-J., Gabet, E., Mudd, S.M. (2012) Limits
   of windthrow-driven hillslope sediment flux due to varying storm frequency
   and intensity. Geomorphology.
+* Zadrożny, P. et al. (2017) Vertical pit-mounds distribution of uprooted
+  Norway spruce (Picea abies L.). iForest 10: 783-787.
+* Doane, T.H., Edmonds, D., Yanites, B.J., Lewis, Q. (2021) Topographic
+  roughness on forested hillslopes. Geophys. Res. Lett. 48, e2021GL094987.
 
 Run
 ---
     python TreeThrow.py --species pine --length 60 --width 30 --slope 0.4
     python TreeThrow.py --species aspen --slope-deg 20 --years 3000
-    python TreeThrow.py --compare --length 50 --width 20 --slope 0.35
+    python TreeThrow.py --compare --length 50 --width 20 --slope 0.35   # all four species
     python TreeThrow.py --list-species
 
 Outputs (per species) in --output (default ./tree_throw_output/<species>/):
@@ -103,8 +117,14 @@ class TreeSpecies:
     """Tree-throw parameters for one forest type.
 
     Sizes refer to a mature tree; individual trees draw their own mature size
-    from a lognormal distribution with the given coefficient of variation, and
-    reach it following  f(age) = 1 - exp(-3 age / maturity_age).
+    from a lognormal distribution with the given coefficient of variation.  The
+    root-plate diameter reaches it following  f(age) = 1 - exp(-3 age / maturity_age);
+    rooting depth is reached faster, in about a third of that time.
+
+    `root_plate_diameter` is the equivalent diameter sqrt(L * W) of an elliptical
+    plate whose width across the fall line is `pit_aspect` times its length
+    along it.  Plate diameter and depth are drawn with correlation
+    `size_depth_correlation` (negative: wide plates are shallow, Zadrożny et al. 2017).
     """
 
     key: str
@@ -122,6 +142,8 @@ class TreeSpecies:
     dbh: float                    # cm, mature diameter at breast height (informational)
     fall_slope_bias: float = 2.0  # von Mises concentration per unit gradient (downslope lean)
     regeneration_delay: float = 5.0  # yr, mean delay before a gap is re-stocked
+    pit_aspect: float = 1.5       # pit width across fall / length along fall (Zadrożny: 4.23/2.74)
+    size_depth_correlation: float = -0.6  # correlation of plate diameter and depth (log space)
 
     # ---- derived quantities ------------------------------------------------
     @property
@@ -148,6 +170,8 @@ class TreeSpecies:
             "maturity_age": self.maturity_age > 0,
             "fall_slope_bias": self.fall_slope_bias >= 0,
             "regeneration_delay": self.regeneration_delay >= 0,
+            "pit_aspect": self.pit_aspect > 0,
+            "size_depth_correlation": -1.0 < self.size_depth_correlation < 1.0,
         }
         bad = [k for k, ok in checks.items() if not ok]
         if bad:
@@ -157,7 +181,9 @@ class TreeSpecies:
 # Representative parameter sets.  Values are synthesised from the general
 # forestry / tree-throw literature (stand inventories, windthrow surveys and
 # pit-mound studies) and are deliberately round numbers: treat them as
-# plausible defaults, not site measurements.
+# plausible defaults, not site measurements.  The 'spruce' set is calibrated
+# to the Norway spruce pit-mound survey of Zadrożny et al. (2017); see
+# validation/ for the comparisons behind each value.
 SPECIES: Dict[str, TreeSpecies] = {
     "pine": TreeSpecies(
         key="pine",
@@ -184,8 +210,8 @@ SPECIES: Dict[str, TreeSpecies] = {
                      "classic pit-and-mound microtopography."),
         lifespan_mean=250.0, lifespan_sd=75.0,
         density=220.0,
-        uproot_fraction=0.50,
-        root_plate_diameter=3.2, root_plate_diameter_cv=0.30,
+        uproot_fraction=0.55,
+        root_plate_diameter=3.5, root_plate_diameter_cv=0.30,
         root_plate_depth=0.75, root_plate_depth_cv=0.30,
         maturity_age=100.0,
         dbh=50.0,
@@ -206,6 +232,26 @@ SPECIES: Dict[str, TreeSpecies] = {
         maturity_age=40.0,
         dbh=22.0,
         regeneration_delay=2.0,
+    ),
+    "spruce": TreeSpecies(
+        key="spruce",
+        name="Norway spruce forest (Picea abies), upper montane",
+        description=("Shallow-rooted conifer at high density; windthrow is the main "
+                     "mortality mode. Wide, plate-like root systems produce large, "
+                     "elliptical pits. Root-plate size and pit geometry are calibrated "
+                     "to 75 pit-mounds in Babia Góra National Park (Zadrożny et al. 2017)."),
+        lifespan_mean=220.0, lifespan_sd=60.0,
+        density=500.0,
+        uproot_fraction=0.60,
+        # Fresh plate sized so that, after the first year of collapse, the model pit
+        # matches the 1-yr pits of Zadrożny et al. (0.95 m deep, ~5 m^3).
+        root_plate_diameter=3.6, root_plate_diameter_cv=0.20,
+        root_plate_depth=1.4, root_plate_depth_cv=0.25,
+        maturity_age=70.0,
+        dbh=33.0,
+        regeneration_delay=10.0,
+        pit_aspect=1.54,
+        size_depth_correlation=-0.8,
     ),
 }
 
@@ -252,7 +298,11 @@ class HillslopeConfig:
 
     # Tree throw
     tree_throw: bool = True
-    infill_fraction: float = 0.2       # fraction of root-wad soil falling back into pit
+    infill_fraction: float = 0.3       # fraction of root-wad soil falling back into the pit on flat ground
+    infill_critical_slope: float = 1.07  # fall-line gradient (~47°) at which no soil falls back (Norman 1995)
+    fresh_diffusivity: float = 0.15    # m^2/yr, extra diffusivity of fresh pit-mound soil at t = 0 (fit to Zadrożny 2017)
+    fresh_decay_time: float = 3.0      # yr, e-folding time of the fresh-soil diffusivity (fit to Zadrożny 2017)
+    fresh_margin: float = 0.5          # m, disturbed zone extends this far beyond pit and mound
     wind_direction_deg: float = 0.0    # azimuth of prevailing fall direction (0 = downslope, 90 = +y)
     wind_concentration: float = 0.0    # von Mises kappa of wind control (0 = no wind bias)
     stand_structure: str = "all-aged"  # 'all-aged' (steady state) or 'even-aged' (post-disturbance)
@@ -280,6 +330,11 @@ class HillslopeConfig:
             raise ValueError("stand_structure must be 'all-aged' or 'even-aged'.")
         if not 0 <= self.infill_fraction < 1:
             raise ValueError("infill_fraction must be in [0, 1).")
+        if self.infill_critical_slope <= 0:
+            raise ValueError("infill_critical_slope must be positive.")
+        if self.fresh_diffusivity < 0 or self.fresh_decay_time <= 0 or self.fresh_margin < 0:
+            raise ValueError("fresh_diffusivity, fresh_decay_time and fresh_margin must be non-negative "
+                             "(decay time positive).")
         if self.years <= 0 or self.dt <= 0:
             raise ValueError("years and dt must be positive.")
 
@@ -312,6 +367,26 @@ def growth_factor(age, maturity_age: float):
     return 1.0 - np.exp(-3.0 * age / maturity_age)
 
 
+def depth_growth_factor(age, maturity_age: float):
+    """Fraction of mature rooting depth reached at a given age (about 3x faster than diameter)."""
+    return growth_factor(age, maturity_age / 3.0)
+
+
+def plate_at_age(sp: "TreeSpecies", R_mature, H_mature, age):
+    """Root-plate equivalent radius and depth of a tree of a given age."""
+    return R_mature * growth_factor(age, sp.maturity_age), H_mature * depth_growth_factor(age, sp.maturity_age)
+
+
+def infill_at_slope(f0: float, s_fall, s_crit: float):
+    """Fraction of root-plate soil that falls back into the pit.
+
+    Falls toward the downslope direction shed more mound soil away from the pit
+    (Norman et al. 1995); falls upslope shed more back into it.  `s_fall` is
+    the ground gradient component along the fall direction (positive downhill).
+    """
+    return np.clip(f0 * (1.0 - np.asarray(s_fall) / s_crit), 0.0, 0.95)
+
+
 def lognormal_factor(rng: np.random.Generator, cv: float, size, z=None):
     """Unit-mean lognormal multiplier; z (standard normal) may be supplied for correlation."""
     if cv <= 0:
@@ -328,38 +403,44 @@ def draw_lifespans(rng: np.random.Generator, sp: TreeSpecies, n: int) -> np.ndar
 
 
 def draw_mature_sizes(rng: np.random.Generator, sp: TreeSpecies, n: int):
-    """Mature root-plate radius and depth (m); size factors are correlated (r = 0.6)."""
+    """Mature root-plate equivalent radius and depth (m), correlated in log space."""
+    rho = sp.size_depth_correlation
     z1 = rng.standard_normal(n)
-    z2 = 0.6 * z1 + 0.8 * rng.standard_normal(n)
+    z2 = rho * z1 + math.sqrt(1 - rho * rho) * rng.standard_normal(n)
     radius = 0.5 * sp.root_plate_diameter * lognormal_factor(rng, sp.root_plate_diameter_cv, n, z1)
     depth = sp.root_plate_depth * lognormal_factor(rng, sp.root_plate_depth_cv, n, z2)
     return radius, depth
 
 
-def expected_tree_throw(sp: TreeSpecies, slope: float, infill_fraction: float = 0.2,
+def expected_tree_throw(sp: TreeSpecies, slope: float, infill_fraction: float = 0.3,
+                        infill_critical_slope: float = 1.07,
                         n_samples: int = 200_000, seed: int = 0) -> Dict[str, float]:
     """Monte-Carlo expectation of tree-throw transport on an infinite planar slope.
 
-    Assumes unlimited soil depth and no wind bias.  Returns the event rate,
-    mean event volume, mean displacement, mean downslope flux q (m^2/yr) and
-    the equivalent linear diffusivity D_tt = q / S.
+    Assumes unlimited soil depth and no wind bias, and covers the uprooting
+    event itself (not the later collapse of fresh pits and mounds).  Returns the
+    event rate, mean excavated and displaced volumes, mean displacement, mean
+    downslope flux q (m^2/yr) and the equivalent linear diffusivity D_tt = q / S.
     """
     rng = np.random.default_rng(seed)
     life = draw_lifespans(rng, sp, n_samples)
     r_m, h_m = draw_mature_sizes(rng, sp, n_samples)
-    f = growth_factor(life, sp.maturity_age)
-    r, h = r_m * f, h_m * f
+    r, h = plate_at_age(sp, r_m, h_m, life)
     vol = 0.5 * np.pi * r * r * h
-    disp = (1 - infill_fraction) * (r + h / 3.0)
+    a = r / math.sqrt(sp.pit_aspect)                    # semi-axis along the fall line
     kappa = sp.fall_slope_bias * slope
-    mean_cos = _bessel_ratio(kappa)
+    phi = rng.vonmises(0.0, kappa, n_samples) if kappa > 0 else rng.uniform(-np.pi, np.pi, n_samples)
+    infill = infill_at_slope(infill_fraction, slope * np.cos(phi), infill_critical_slope)
+    displaced = vol * (1 - infill)
+    disp = a + h / 3.0
     rate = sp.uproot_rate_per_ha / 1.0e4           # events / m^2 / yr
-    q = rate * float(np.mean(vol * disp)) * mean_cos
+    q = rate * float(np.mean(displaced * disp * np.cos(phi)))
     return {
         "events_per_ha_yr": sp.uproot_rate_per_ha,
         "mean_event_volume_m3": float(np.mean(vol)),
-        "mean_displacement_m": float(np.sum(vol * disp) / np.sum(vol)),
-        "mean_cos_fall": mean_cos,
+        "mean_displaced_volume_m3": float(np.mean(displaced)),
+        "mean_displacement_m": float(np.sum(displaced * disp) / np.sum(displaced)),
+        "mean_cos_fall": float(np.mean(np.cos(phi))),
         "flux_m2_per_yr": q,
         "diffusivity_m2_per_yr": q / slope if slope > 0 else float("nan"),
         "surface_turnover_yr": 1.0 / (rate * float(np.mean(np.pi * r * r))),
@@ -379,6 +460,7 @@ class RunRecord:
     export_diff: List[float] = field(default_factory=list)
     moment_tt: List[float] = field(default_factory=list)         # cumulative sum(V * dx_downslope) m^4
     moment_diff: List[float] = field(default_factory=list)
+    moment_fresh: List[float] = field(default_factory=list)      # collapse of fresh pits/mounds
     roughness: List[float] = field(default_factory=list)         # m, RMS detrended elevation
     mean_soil: List[float] = field(default_factory=list)
     relief: List[float] = field(default_factory=list)
@@ -420,6 +502,7 @@ class TreeThrowModel:
         self.export_diff = 0.0
         self.moment_tt = 0.0
         self.moment_diff = 0.0
+        self.moment_fresh = 0.0           # downslope moment from collapse of fresh pits/mounds
         self.rock_to_soil_tt = 0.0        # m^3 soil produced by root plucking
         self.rock_to_soil_sp = 0.0        # m^3 soil produced by the soil-production function
         self.clip_error = 0.0             # m^3 soil volume lost to negative-depth clipping
@@ -427,6 +510,10 @@ class TreeThrowModel:
         self.n_deaths = 0
         self.event_log: List[tuple] = []
         self.record = RunRecord()
+        # Fresh (recently disturbed) soil: time each cell was last disturbed, and the
+        # bounding boxes of disturbances still collapsing.
+        self.fresh_t0 = np.full((self.nx, self.ny), -np.inf)
+        self.fresh_windows: List[tuple] = []
 
         self._init_stand()
 
@@ -493,25 +580,42 @@ class TreeThrowModel:
         return I, J, (I + 0.5) * dx - xc, (J + 0.5) * dx - yc
 
     # ------------------------------------------------------------ tree throw
-    def uproot(self, x0: float, y0: float, R: float, H: float, phi: float) -> Dict[str, float]:
-        """Apply one uprooting event at (x0, y0) with root plate radius R, depth H and
-        fall azimuth phi (radians, 0 = +x = downslope).  Returns event diagnostics."""
+    def _ellipse(self, xc, yc, a, b, phi, pad):
+        """Window and elliptical-paraboloid weights with semi-axis `a` along azimuth phi, `b` across."""
+        I, J, ox, oy = self._window(xc, yc, max(a, b) + pad)
+        c, s = math.cos(phi), math.sin(phi)
+        u = ox * c + oy * s
+        v = -ox * s + oy * c
+        return I, J, u, v, np.clip(1.0 - (u / a) ** 2 - (v / b) ** 2, 0.0, None)
+
+    def uproot(self, x0: float, y0: float, R: float, H: float, phi: float,
+               s_fall: Optional[float] = None) -> Dict[str, float]:
+        """Apply one uprooting event at (x0, y0).
+
+        R is the root plate's equivalent radius sqrt(a*b), H its depth and phi the
+        fall azimuth (radians, 0 = +x = downslope).  The pit is an elliptical
+        paraboloid `pit_aspect` times wider across the fall line than along it.
+        `s_fall` is the ground gradient along the fall direction (computed from
+        the surface if omitted); it sets how much root-plate soil falls back into
+        the pit.  Returns event diagnostics.
+        """
         cfg, dx, ca = self.cfg, self.cfg.dx, self.cell_area
         R = max(R, 0.5 * dx)
         H = max(H, 1e-3)
+        k = math.sqrt(self.sp.pit_aspect)
+        a_p, b_p = max(R / k, 0.5 * dx), max(R * k, 0.5 * dx)
 
         # ---- pit -----------------------------------------------------------
-        I, J, ox, oy = self._window(x0, y0, R + dx)
-        shape = np.clip(1.0 - (ox * ox + oy * oy) / (R * R), 0.0, None)
+        I, J, u, v, shape = self._ellipse(x0, y0, a_p, b_p, phi, dx)
         if shape.sum() <= 0:                            # sub-grid plate: use host cell
             shape = ((I == int(x0 / dx)) & (J == int(y0 / dx))).astype(float)
         # Scale so the discrete pit volume equals the analytic paraboloid volume,
         # then drop any part of the pit beyond the ridge or in the channel cell.
-        depth = shape * (0.5 * math.pi * R * R * H) / (shape.sum() * ca)
+        depth = shape * (0.5 * math.pi * a_p * b_p * H) / (shape.sum() * ca)
         depth *= (I >= 0) & (I < self.nx - 1)
         Ii, Jj = np.clip(I, 0, self.nx - 1), J % self.ny
         m = depth > 0
-        Ii, Jj, depth = Ii[m], Jj[m], depth[m]
+        Ii, Jj, Ju, depth = Ii[m], Jj[m], J[m], depth[m]
 
         if cfg.soil_model:
             h_here = self.h[Ii, Jj]
@@ -525,25 +629,28 @@ class TreeThrowModel:
         self.rock_to_soil_tt += rock_soil
         volume = soil_cut.sum() * ca + rock_soil         # soil-equivalent volume in root wad
         if volume <= 0:
-            return {"volume": 0.0, "moment": 0.0, "export": 0.0, "R": R, "H": H}
+            return {"volume": 0.0, "displaced": 0.0, "moment": 0.0, "export": 0.0, "R": R, "H": H,
+                    "infill": 0.0}
         pit_x = np.sum((Ii + 0.5) * dx * (soil_cut + rock_cut * cfg.rock_to_soil_dilation)) * ca / volume
 
         # ---- infill (soil falling back into the pit) ----------------------
+        if s_fall is None:
+            gx, gy = self._local_gradient(x0, y0, max(2.0 * R, 1.0))
+            s_fall = gx * math.cos(phi) + gy * math.sin(phi)
+        f_in = float(infill_at_slope(cfg.infill_fraction, s_fall, cfg.infill_critical_slope))
         w_in = soil_cut + rock_cut
-        infill = cfg.infill_fraction * volume
+        infill = f_in * volume
         np.add.at(self.h, (Ii, Jj), infill * w_in / (w_in.sum() * ca))
         mound_vol = volume - infill
 
         # ---- mound: root plate rotated about a hinge at the pit edge -------
-        d = R + H / 3.0                                   # centroid travel during rotation
+        d = a_p + H / 3.0                                 # centroid travel during rotation
         cphi, sphi = math.cos(phi), math.sin(phi)
         xm, ym = x0 + d * cphi, y0 + d * sphi
-        a = max(0.75 * R, dx)                             # semi-axis along fall line
-        b = max(R, dx)                                    # semi-axis across fall line
-        I, J, ox, oy = self._window(xm, ym, max(a, b) + dx)
-        u = ox * cphi + oy * sphi
-        v = -ox * sphi + oy * cphi
-        mshape = np.clip(1.0 - (u / a) ** 2 - (v / b) ** 2, 0.0, None)
+        a = max(a_p, dx)                                  # semi-axis along fall line (soil shed from a
+                                                          # plate about as tall as the pit is long)
+        b = max(b_p, dx)                                  # semi-axis across fall line
+        I, J, u, v, mshape = self._ellipse(xm, ym, a, b, phi, dx)
         if mshape.sum() <= 0:
             mshape = np.zeros_like(u)
             mshape.flat[np.argmin(u * u + v * v)] = 1.0
@@ -557,14 +664,107 @@ class TreeThrowModel:
         Ik = I[keep]
         Ik = np.where(Ik < 0, -1 - Ik, Ik)                # mirror across symmetric divide
         Ik = np.minimum(Ik, self.nx - 2)
-        np.add.at(self.h, (Ik, J[keep] % self.ny), dep[keep])
+        Jk = J[keep]
+        np.add.at(self.h, (Ik, Jk % self.ny), dep[keep])
         self.export_tt += exported
 
         # Downslope transport moment.  Mirrored soil really moved down the other
         # side of the divide, so the moment uses the unmirrored landing position.
         moment = mound_vol * (mound_x - pit_x)
         self.moment_tt += moment
-        return {"volume": volume, "moment": moment, "export": exported, "R": R, "H": H}
+        self._register_fresh(np.concatenate([Ii, Ik]), np.concatenate([Ju, Jk]))
+        return {"volume": volume, "displaced": mound_vol, "moment": moment, "export": exported,
+                "R": R, "H": H, "infill": f_in}
+
+    def _register_fresh(self, rows: np.ndarray, cols_unwrapped: np.ndarray) -> None:
+        """Mark the pit, mound and a margin around them as freshly disturbed soil."""
+        cfg = self.cfg
+        if cfg.fresh_diffusivity <= 0 or rows.size == 0:
+            return
+        mrg = int(math.ceil(cfg.fresh_margin / cfg.dx))
+        pad = mrg + 3                                     # ring of calm cells around the fresh zone
+        i0, i1 = max(int(rows.min()) - pad, 0), min(int(rows.max()) + pad, self.nx - 2)
+        j0, j1 = int(cols_unwrapped.min()) - pad, int(cols_unwrapped.max()) + pad
+        if j1 - j0 + 1 > self.ny:
+            j0, j1 = 0, self.ny - 1
+        foot = np.zeros((i1 - i0 + 1, j1 - j0 + 1), bool)
+        r = np.clip(rows, i0, i1) - i0
+        c = np.clip(cols_unwrapped, j0, j1) - j0
+        foot[r, c] = True
+        if mrg > 0:                                       # dilate by the margin (disc)
+            grown = foot.copy()
+            p = np.pad(foot, mrg)
+            for di in range(-mrg, mrg + 1):
+                for dj in range(-mrg, mrg + 1):
+                    if di * di + dj * dj <= mrg * mrg:
+                        grown |= p[mrg + di: mrg + di + foot.shape[0], mrg + dj: mrg + dj + foot.shape[1]]
+            foot = grown
+        rr, cc = np.nonzero(foot)
+        self.fresh_t0[rr + i0, (cc + j0) % self.ny] = self.time
+        self.fresh_windows.append((i0, i1, j0, j1, self.time))
+
+    def _fresh_step(self, t_start: float, dt: float) -> None:
+        """Collapse of fresh pits and mounds: extra diffusion on recently disturbed soil.
+
+        D_fresh(age) = fresh_diffusivity * exp(-age / fresh_decay_time), averaged
+        exactly over the step.  Applied inside each disturbance window with no
+        flux across the window border, so soil volume is conserved.  The flux is
+        driven by relief relative to a plane fitted to the undisturbed cells of the
+        window: collapse smooths the pit and mound, while downslope creep along
+        the regional gradient is left to the background diffusion.
+        """
+        cfg, dx = self.cfg, self.cfg.dx
+        Df, tau = cfg.fresh_diffusivity, cfg.fresh_decay_time
+        if Df <= 0 or not self.fresh_windows:
+            return
+        self.fresh_windows = [w for w in self.fresh_windows if t_start - w[4] < 8.0 * tau]
+        for i0, i1, j0, j1, _ in self.fresh_windows:
+            rows = np.arange(i0, i1 + 1)
+            cols = np.arange(j0, j1 + 1) % self.ny
+            ix = np.ix_(rows, cols)
+            age = t_start - self.fresh_t0[ix]
+            with np.errstate(over="ignore", invalid="ignore"):
+                Dc = Df * tau * (np.exp(-age / tau) - np.exp(-(age + dt) / tau)) / dt
+            Dc = np.where(np.isfinite(Dc) & (age >= 0), Dc, 0.0)
+            if Dc.max() <= 1e-12:
+                continue
+            Dfx = 0.5 * (Dc[1:] + Dc[:-1])
+            Dfy = 0.5 * (Dc[:, 1:] + Dc[:, :-1])
+            h = self.h[ix].copy()
+            zb = self.zb[ix]
+            # Reference plane from cells that are not currently collapsing.
+            II, JJ = np.meshgrid(np.arange(rows.size, dtype=float), np.arange(cols.size, dtype=float),
+                                 indexing="ij")
+            calm = Dc < 1e-3 * Dc.max()
+            if calm.sum() < 3:
+                calm = np.ones_like(calm)
+            A = np.column_stack([np.ones(calm.sum()), II[calm], JJ[calm]])
+            coef = np.linalg.lstsq(A, (zb + h)[calm], rcond=None)[0]
+            zb = zb - (coef[0] + coef[1] * II + coef[2] * JJ)
+            nsub = max(int(math.ceil(dt / (0.2 * dx * dx / Dc.max()))), 1)
+            sub = dt / nsub
+            for _ in range(nsub):
+                z = zb + h
+                fx, fy = Dfx, Dfy
+                if cfg.soil_model:
+                    hs = cfg.transport_depth_scale
+                    fx = Dfx * (1 - np.exp(-0.5 * (h[1:] + h[:-1]) / hs))
+                    fy = Dfy * (1 - np.exp(-0.5 * (h[:, 1:] + h[:, :-1]) / hs))
+                qx = -fx * (z[1:] - z[:-1]) / dx
+                qy = -fy * (z[:, 1:] - z[:, :-1]) / dx
+                div = np.zeros_like(h)
+                div[:-1] += qx / dx
+                div[1:] -= qx / dx
+                div[:, :-1] += qy / dx
+                div[:, 1:] -= qy / dx
+                h -= div * sub
+                self.moment_fresh += float(qx.sum()) * self.cell_area * sub
+            if cfg.soil_model:
+                neg = h < 0
+                if neg.any():
+                    self.clip_error += float(-h[neg].sum()) * self.cell_area
+                    h[neg] = 0.0
+            self.h[ix] = h
 
     def _tree_step(self, dt: float) -> int:
         self.age += dt
@@ -574,12 +774,11 @@ class TreeThrowModel:
         self.n_deaths += dead.size
         throw = dead[self.rng.random(dead.size) < self.sp.uproot_fraction]
         for k in throw:
-            f = growth_factor(self.life[k], self.sp.maturity_age)
-            R, H = self.R_mature[k] * f, self.H_mature[k] * f
+            R, H = plate_at_age(self.sp, self.R_mature[k], self.H_mature[k], self.life[k])
             phi = self._fall_direction(self.tx[k], self.ty[k], R)
             ev = self.uproot(self.tx[k], self.ty[k], R, H, phi)
             self.event_log.append((self.time, self.tx[k], self.ty[k], ev["R"], ev["H"],
-                                   math.degrees(phi), ev["volume"], ev["export"]))
+                                   math.degrees(phi), ev["volume"], ev["displaced"], ev["export"]))
         self.n_events += throw.size
         self._replace_trees(dead)
         return int(throw.size)
@@ -648,10 +847,12 @@ class TreeThrowModel:
 
     def step(self, dt: Optional[float] = None) -> int:
         dt = self.cfg.dt if dt is None else dt
+        t_start = self.time
+        n = self._tree_step(dt) if self.cfg.tree_throw else 0   # events at the start of the step
         self.time += dt
-        n = self._tree_step(dt) if self.cfg.tree_throw else 0
         self._soil_production(dt)
         self._diffusion_step(dt)
+        self._fresh_step(t_start, dt)
         self._baselevel()
         return n
 
@@ -663,6 +864,7 @@ class TreeThrowModel:
         r.export_diff.append(self.export_diff)
         r.moment_tt.append(self.moment_tt)
         r.moment_diff.append(self.moment_diff)
+        r.moment_fresh.append(self.moment_fresh)
         r.roughness.append(self.roughness())
         r.mean_soil.append(float(self.h[:-1].mean()))
         prof = self.z.mean(axis=1)
@@ -702,8 +904,11 @@ class TreeThrowModel:
         area = self.L_active * self.W
         q_tt = self.moment_tt / (area * T)       # mean downslope flux per unit width (m^2/yr)
         q_d = self.moment_diff / (area * T)
+        q_c = self.moment_fresh / (area * T)    # collapse of fresh pits and mounds
+        q_all = q_tt + q_c
         s_mean = (self.z_initial[0, 0] - self.z_initial[-1, 0]) / (self.x[-1] - self.x[0])
-        expected = expected_tree_throw(self.sp, cfg.slope, cfg.infill_fraction)
+        expected = expected_tree_throw(self.sp, cfg.slope, cfg.infill_fraction, cfg.infill_critical_slope)
+        ev = np.array(self.event_log) if self.event_log else np.zeros((0, 9))
         prof0, prof1 = self.z_initial.mean(axis=1), self.z.mean(axis=1)
         return {
             "species": asdict(self.sp),
@@ -715,10 +920,15 @@ class TreeThrowModel:
             "tree_deaths": self.n_deaths,
             "uprooting_events": self.n_events,
             "uprooting_rate_per_ha_yr": self.n_events / (area / 1e4) / T,
+            "mean_event_volume_m3": float(ev[:, 6].mean()) if len(ev) else float("nan"),
+            "mean_displaced_volume_m3": float(ev[:, 7].mean()) if len(ev) else float("nan"),
             "mean_flux_tree_throw_m2_yr": q_tt,
+            "mean_flux_pit_mound_collapse_m2_yr": q_c,
+            "mean_flux_tree_throw_total_m2_yr": q_all,
             "mean_flux_diffusion_m2_yr": q_d,
-            "tree_throw_share_of_flux": q_tt / (q_tt + q_d) if (q_tt + q_d) > 0 else float("nan"),
+            "tree_throw_share_of_flux": q_all / (q_all + q_d) if (q_all + q_d) > 0 else float("nan"),
             "effective_D_tree_throw_m2_yr": q_tt / s_mean if s_mean > 0 else float("nan"),
+            "effective_D_tree_throw_total_m2_yr": q_all / s_mean if s_mean > 0 else float("nan"),
             "expected_D_tree_throw_m2_yr": expected["diffusivity_m2_per_yr"],
             "background_D_m2_yr": cfg.diffusivity,
             "sediment_yield_tree_throw_m3": self.export_tt,
@@ -739,7 +949,7 @@ class TreeThrowModel:
         with open(outdir / "events.csv", "w", newline="", encoding="utf-8") as fh:
             w = csv.writer(fh)
             w.writerow(["time_yr", "x_m", "y_m", "root_plate_radius_m", "root_plate_depth_m",
-                        "fall_azimuth_deg", "volume_m3", "exported_m3"])
+                        "fall_azimuth_deg", "excavated_m3", "displaced_m3", "exported_m3"])
             w.writerows([[f"{v:.6g}" for v in row] for row in self.event_log])
         with open(outdir / "summary.json", "w", encoding="utf-8") as fh:
             json.dump(self.summary(), fh, indent=2)
@@ -805,10 +1015,10 @@ def plot_run(model: TreeThrowModel, path: Path) -> None:
     else:
         ax.axis("off")
 
-    ev = np.array(model.event_log) if model.event_log else np.zeros((0, 8))
+    ev = np.array(model.event_log) if model.event_log else np.zeros((0, 9))
     if len(ev):
         axp = fig.add_subplot(gs[0, 3], projection="polar")
-        axp.hist(np.radians(ev[:, 5]), bins=24, weights=ev[:, 6], color="tab:green", alpha=0.75)
+        axp.hist(np.radians(ev[:, 5]), bins=24, weights=ev[:, 7], color="tab:green", alpha=0.75)
         axp.set_theta_zero_location("S")  # downslope (+x) plotted toward the bottom
         axp.set_title("Fall azimuths (volume-weighted)\n0° = downslope", fontsize=10)
     else:
@@ -835,8 +1045,11 @@ def plot_run(model: TreeThrowModel, path: Path) -> None:
     area_T = model.L_active * model.W
     with np.errstate(invalid="ignore", divide="ignore"):
         q_tt = np.array(rec.moment_tt) / (area_T * t)
+        q_c = np.array(rec.moment_fresh) / (area_T * t)
         q_d = np.array(rec.moment_diff) / (area_T * t)
-    ax.plot(t[1:], q_tt[1:] * 1e4, label="tree throw", color="tab:green")
+    ax.plot(t[1:], q_tt[1:] * 1e4, label="tree throw (uprooting)", color="tab:green")
+    ax.plot(t[1:], q_c[1:] * 1e4, label="pit–mound collapse", color="tab:olive", ls="--")
+    q_tt = q_tt + q_c
     ax.plot(t[1:], q_d[1:] * 1e4, label="background diffusion", color="tab:brown")
     ax.plot(t[1:], (q_tt + q_d)[1:] * 1e4, label="total", color="k", lw=1)
     ax.set(title="Running mean downslope flux", xlabel="time (yr)", ylabel="q (cm² / yr)")
@@ -855,7 +1068,7 @@ def plot_run(model: TreeThrowModel, path: Path) -> None:
 
 def plot_comparison(models: List[TreeThrowModel], path: Path) -> None:
     plt = _import_pyplot()
-    colors = {"pine": "tab:green", "deciduous": "tab:orange", "aspen": "tab:olive"}
+    colors = {"pine": "tab:green", "deciduous": "tab:orange", "aspen": "tab:olive", "spruce": "tab:blue"}
     fig, axes = plt.subplots(2, 3, figsize=(15, 9))
     fig.suptitle("Tree-throw landscape evolution: species comparison", fontsize=13)
 
@@ -864,7 +1077,7 @@ def plot_comparison(models: List[TreeThrowModel], path: Path) -> None:
         t = np.array(m.record.time)
         area_T = m.L_active * m.W
         with np.errstate(invalid="ignore", divide="ignore"):
-            q_tt = np.array(m.record.moment_tt) / (area_T * t)
+            q_tt = (np.array(m.record.moment_tt) + np.array(m.record.moment_fresh)) / (area_T * t)
         axes[0, 0].plot(m.x, m.z.mean(axis=1) - m.z_initial.mean(axis=1), color=c, label=m.sp.key)
         axes[0, 1].plot(t[1:], q_tt[1:] * 1e4, color=c, label=m.sp.key)
         axes[0, 2].plot(t, np.array(m.record.roughness) * 100, color=c, label=m.sp.key)
@@ -877,7 +1090,8 @@ def plot_comparison(models: List[TreeThrowModel], path: Path) -> None:
 
     axes[0, 0].axhline(0, color="k", lw=0.5)
     axes[0, 0].set(title="Change in mean profile", xlabel="distance from ridge (m)", ylabel="Δz (m)")
-    axes[0, 1].set(title="Tree-throw downslope flux (running mean)", xlabel="time (yr)", ylabel="q (cm²/yr)")
+    axes[0, 1].set(title="Tree-throw downslope flux incl. pit–mound collapse\n(running mean)",
+                   xlabel="time (yr)", ylabel="q (cm²/yr)")
     axes[0, 2].set(title="Pit–mound roughness", xlabel="time (yr)", ylabel="RMS (cm)")
     axes[1, 0].set(title="Cumulative sediment yield to channel\n(dashed = tree-throw part)",
                    xlabel="time (yr)", ylabel="m³ per m width")
@@ -907,7 +1121,7 @@ def plot_comparison(models: List[TreeThrowModel], path: Path) -> None:
 # ======================================================================
 
 
-def species_table(slope: float, infill_fraction: float = 0.2, species=None) -> str:
+def species_table(slope: float, infill_fraction: float = 0.3, species=None) -> str:
     species = species or list(SPECIES.values())
     rows = [("Parameter", *[s.key for s in species])]
 
@@ -922,7 +1136,9 @@ def species_table(slope: float, infill_fraction: float = 0.2, species=None) -> s
     row("Mature root-plate depth (m)", lambda s: s.root_plate_depth, "{:.2f}")
     row("Mature DBH (cm)", lambda s: s.dbh, "{:.0f}")
     row("Uprootings (/ha/yr)", lambda s: s.uproot_rate_per_ha, "{:.2f}")
-    row("Mean event volume (m³)", lambda s: exp[s.key]["mean_event_volume_m3"], "{:.2f}")
+    row("Pit width / length", lambda s: s.pit_aspect, "{:.2f}")
+    row("Mean excavated volume (m³)", lambda s: exp[s.key]["mean_event_volume_m3"], "{:.2f}")
+    row("Mean displaced volume (m³)", lambda s: exp[s.key]["mean_displaced_volume_m3"], "{:.2f}")
     row("Mean displacement (m)", lambda s: exp[s.key]["mean_displacement_m"], "{:.2f}")
     row(f"Expected D_tt at S={slope:.2f} (m²/yr)", lambda s: exp[s.key]["diffusivity_m2_per_yr"], "{:.2e}")
     row("Surface turnover time (yr)", lambda s: exp[s.key]["surface_turnover_yr"], "{:.0f}")
@@ -939,7 +1155,7 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--species", default="pine", choices=sorted(SPECIES),
                    help="forest type to simulate")
     g.add_argument("--species-file", help="JSON file defining a custom species (overrides --species)")
-    g.add_argument("--compare", action="store_true", help="run all three built-in species")
+    g.add_argument("--compare", action="store_true", help="run all built-in species")
     g.add_argument("--list-species", action="store_true", help="print species parameters and exit")
     g.add_argument("--stand", dest="stand_structure", default="all-aged", choices=["all-aged", "even-aged"])
     g.add_argument("--density", type=float, help="override stand density (stems/ha)")
@@ -964,7 +1180,12 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--no-soil", action="store_true", help="disable the soil/bedrock model")
     g.add_argument("--soil-depth", type=float, default=0.8, help="initial soil thickness (m)")
     g.add_argument("--no-tree-throw", action="store_true", help="diffusion-only control run")
-    g.add_argument("--infill", type=float, default=0.2, help="fraction of root-wad soil falling back into pit")
+    g.add_argument("--infill", type=float, default=0.3,
+                   help="fraction of root-wad soil falling back into the pit on flat ground")
+    g.add_argument("--fresh-diffusivity", type=float, default=0.15,
+                   help="extra diffusivity of freshly disturbed pit-mound soil (m²/yr)")
+    g.add_argument("--fresh-decay-time", type=float, default=3.0,
+                   help="e-folding time of the fresh-soil diffusivity (yr)")
     g.add_argument("--wind-dir", type=float, default=0.0, help="prevailing fall azimuth (deg, 0 = downslope)")
     g.add_argument("--wind-kappa", type=float, default=0.0, help="wind concentration (0 = none)")
     g.add_argument("--baselevel-rate", type=float, default=0.0, help="channel lowering rate (m/yr)")
@@ -987,6 +1208,7 @@ def config_from_args(a) -> HillslopeConfig:
         diffusivity=a.diffusivity, transport_law=a.transport_law, critical_slope=a.critical_slope,
         soil_model=not a.no_soil, initial_soil_depth=a.soil_depth,
         tree_throw=not a.no_tree_throw, infill_fraction=a.infill,
+        fresh_diffusivity=a.fresh_diffusivity, fresh_decay_time=a.fresh_decay_time,
         wind_direction_deg=a.wind_dir, wind_concentration=a.wind_kappa,
         stand_structure=a.stand_structure, baselevel_lowering_rate=a.baselevel_rate, seed=a.seed,
     )
