@@ -76,3 +76,12 @@ For each species, in `--output/<species>/`:
 * the nonlinear flux enhancement and convex crest formation;
 * simulated vs. analytic tree-throw diffusivity and event rate;
 * seed reproducibility and the CLI.
+
+## Literature validation
+
+`python validation/run_validation.py` (about 1 minute on 4 cores; `--quick` for a smoke test)
+compares the model against published pit-mound volumes, uprooting rates, flux shares,
+flux magnitudes and mound-decay times. Results, figures and the benchmark list are in
+[`validation/results/VALIDATION_REPORT.md`](validation/results/VALIDATION_REPORT.md).
+The benchmark values were transcribed from abstracts and search summaries, so check
+them against the original papers.
