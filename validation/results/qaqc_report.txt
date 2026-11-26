@@ -1,21 +1,36 @@
 == Volume budget (hillslope rows) ==
-deciduous default            dV    10.4012  expected    10.4012  residual -3.50e-12 m3  clip 0.00e+00  events    51    1.6s  finite True  h_min 0.190
-spruce default               dV    93.2020  expected    93.2020  residual -1.08e-12 m3  clip 0.00e+00  events   239    2.7s  finite True  h_min 0.138
-aspen default                dV    10.9313  expected    10.9313  residual -1.07e-12 m3  clip 0.00e+00  events   450    3.1s  finite True  h_min 0.360
-pine fire                    dV    15.6904  expected    15.6904  residual -1.61e-12 m3  clip 0.00e+00  events    40    1.6s  finite True  h_min 0.391
-spruce storms                dV    77.5500  expected    77.5500  residual -6.39e-13 m3  clip 0.00e+00  events   249    2.5s  finite True  h_min 0.192
-deciduous nonlinear steep    dV   -34.6204  expected   -34.6204  residual -1.49e-12 m3  clip 1.34e-19  events    48    2.2s  finite True  h_min 0.000
-deciduous baselevel+wind     dV     5.5762  expected     5.5762  residual -3.36e-12 m3  clip 0.00e+00  events    52    1.2s  finite True  h_min 0.324
-spruce thin soil             dV   225.9008  expected   225.9008  residual +0.00e+00 m3  clip 0.00e+00  events   243    3.0s  finite True  h_min 0.000
-aspen root cycle             dV     8.2775  expected     8.2775  residual -1.01e-12 m3  clip 0.00e+00  events   450    2.8s  finite True  h_min 0.312
-pine no soil                 dV   -11.0912  expected   -11.0912  residual -1.24e-14 m3  clip 0.00e+00  events    46    1.0s  finite True  h_min -0.489
-spruce narrow plot           dV    12.1825  expected    12.1825  residual -3.02e-13 m3  clip 0.00e+00  events    38    0.4s  finite True  h_min 0.097
-deciduous dt=5               dV     8.6536  expected     8.6536  residual +1.38e-12 m3  clip 0.00e+00  events    51    0.3s  finite True  h_min 0.372
+deciduous default            dV    10.4018  expected    10.4018  residual -3.42e-12 m3  clip 0.00e+00  events    51    1.3s  finite True  h_min 0.190
+spruce default               dV    93.2054  expected    93.2054  residual -8.95e-13 m3  clip 0.00e+00  events   239    2.3s  finite True  h_min 0.138
+aspen default                dV    10.9303  expected    10.9303  residual -1.18e-12 m3  clip 0.00e+00  events   450    2.8s  finite True  h_min 0.360
+pine fire                    dV    15.6906  expected    15.6906  residual -1.65e-12 m3  clip 0.00e+00  events    40    1.2s  finite True  h_min 0.391
+spruce storms                dV    77.5740  expected    77.5740  residual -6.54e-13 m3  clip 0.00e+00  events   249    3.1s  finite True  h_min 0.187
+deciduous nonlinear steep    dV   -34.5754  expected   -34.5754  residual -2.70e-12 m3  clip 5.82e-20  events    48   38.4s  finite True  h_min 0.000
+deciduous baselevel+wind     dV     5.5761  expected     5.5761  residual -3.64e-12 m3  clip 0.00e+00  events    52    2.1s  finite True  h_min 0.324
+spruce thin soil             dV   225.8771  expected   225.8771  residual +1.71e-13 m3  clip 0.00e+00  events   243    7.8s  finite True  h_min 0.000
+aspen root cycle             dV     8.2766  expected     8.2766  residual -1.10e-12 m3  clip 0.00e+00  events   450    7.9s  finite True  h_min 0.312
+pine no soil                 dV   -11.0912  expected   -11.0912  residual -1.07e-14 m3  clip 0.00e+00  events    46    1.6s  finite True  h_min -0.489
+spruce narrow plot           dV    12.1825  expected    12.1825  residual -3.13e-13 m3  clip 1.69e-21  events    38    1.5s  finite True  h_min 0.097
+deciduous dt=5               dV     8.6535  expected     8.6535  residual +1.37e-12 m3  clip 0.00e+00  events    51    0.8s  finite True  h_min 0.372
+oak snags                    dV    12.3369  expected    12.3369  residual -4.11e-12 m3  clip 0.00e+00  events    79    3.5s  finite True  h_min 0.370
+lodgepole fire               dV    12.3174  expected    12.3174  residual -1.62e-12 m3  clip 0.00e+00  events   207    5.2s  finite True  h_min 0.441
+hemlock outbreaks            dV    11.6734  expected    11.6734  residual -2.67e-12 m3  clip 0.00e+00  events   162    4.7s  finite True  h_min 0.339
+douglas_fir storms           dV    13.6556  expected    13.6556  residual -1.77e-12 m3  clip 0.00e+00  events    98    3.7s  finite True  h_min 0.382
+ponderosa thin soil          dV    59.5613  expected    59.5613  residual -1.48e-12 m3  clip 0.00e+00  events     4    2.3s  finite True  h_min 0.083
+near-critical very thin      dV    28.7633  expected    28.7633  residual -1.88e-12 m3  clip 3.89e-21  events    49   43.0s  finite True  h_min 0.000
+bare rock no plucking        dV     0.0000  expected     0.0000  residual +0.00e+00 m3  clip 0.00e+00  events    44    0.4s  finite True  h_min 0.000
+thin narrow storms           dV     3.6422  expected     3.6422  residual -1.28e-13 m3  clip 0.00e+00  events    65    1.1s  finite True  h_min 0.001
+lodgepole small plates       dV    12.3902  expected    12.3902  residual -1.81e-12 m3  clip 0.00e+00  events   182    5.0s  finite True  h_min 0.452
 
 == Single-event pit volume vs analytic, by dx ==
 aspen      R=0.75  dx 0.1: vol x1.000 disp 0.81 m | dx 0.25: vol x1.000 disp 0.81 m | dx 0.5: vol x1.000 disp 0.85 m | dx 1.0: vol x1.000 disp 0.80 m | analytic disp 0.81
 deciduous  R=1.43  dx 0.1: vol x1.000 disp 1.46 m | dx 0.25: vol x1.000 disp 1.46 m | dx 0.5: vol x1.000 disp 1.47 m | dx 1.0: vol x1.000 disp 1.43 m | analytic disp 1.46
 spruce     R=1.65  dx 0.1: vol x1.000 disp 1.89 m | dx 0.25: vol x1.000 disp 1.89 m | dx 0.5: vol x1.000 disp 1.88 m | dx 1.0: vol x1.000 disp 1.94 m | analytic disp 1.89
+lodgepole_pine R=0.60  dx 0.1: vol x1.000 disp 0.61 m | dx 0.25: vol x1.000 disp 0.62 m | dx 0.5: vol x1.000 disp 0.59 m | dx 1.0: vol x1.021 disp -0.00 m | analytic disp 0.61
+
+== Isolated small-plate geometry (R=0.4--0.6 m, 2000 matched events per dx) ==
+dx 0.125: signed moment sim/exact 1.000014; max relative volume error 6.66e-16
+dx 0.250: signed moment sim/exact 0.999926; max relative volume error 6.66e-16
+dx 0.500: signed moment sim/exact 1.003605; max relative volume error 6.66e-16
 
 == Grid convergence (deciduous, 3 seeds) ==
 dx 0.125: D_tt 2.51e-04  share 20.4%  roughness 9.4 cm  event vol 2.90
@@ -25,7 +40,18 @@ dx 0.500: D_tt 2.51e-04  share 20.3%  roughness 9.5 cm  event vol 2.90
 == Time-step sensitivity (spruce, 3 seeds) ==
 dt   1: uproot 1.90/ha/yr  deaths 4.17  share 61.2%  roughness 19.6 cm
 dt   2: uproot 2.04/ha/yr  deaths 4.26  share 64.0%  roughness 19.1 cm
-dt   5: uproot 1.91/ha/yr  deaths 4.30  share 59.2%  roughness 19.8 cm
+dt   5: uproot 1.91/ha/yr  deaths 4.30  share 59.2%  roughness 19.7 cm
+
+== Small-root-plate grid sensitivity (lodgepole_pine, 3 seeds; mean +/- SE) ==
+dx 0.125: D_tt 9.925e-06 +/- 1.18e-06  share 0.5%  roughness 0.3 cm  event vol 0.133
+dx 0.250: D_tt 9.922e-06 +/- 1.18e-06  share 0.6%  roughness 0.3 cm  event vol 0.133
+dx 0.500: D_tt 9.946e-06 +/- 9.43e-07  share 0.7%  roughness 0.4 cm  event vol 0.135
+
+== Disturbance time-step sensitivity (lodgepole fire at 203.5 yr, 3 seeds) ==
+dt 0.5: rate 1.92/ha/yr  share 0.5%  roughness 0.3 cm  scheduling delay 0.00 yr
+dt 1.0: rate 2.05/ha/yr  share 0.8%  roughness 0.4 cm  scheduling delay 0.50 yr
+dt 2.0: rate 2.00/ha/yr  share 0.5%  roughness 0.3 cm  scheduling delay 0.50 yr
+dt 5.0: rate 1.88/ha/yr  share 0.6%  roughness 0.2 cm  scheduling delay 1.50 yr
 
 == Determinism ==
 same seed identical: True | different seed differs: True
@@ -35,4 +61,7 @@ same seed identical: True | different seed differs: True
 2 coincident event(s): pit depth 2.39 -> 1.23 m (ratio 0.513)
 
 == summary() cost ==
-summary(): 0.08 s
+summary() cold: 0.2123 s
+summary() cached: 0.000316 s
+
+PASS: 21 budgets at <=1e-11 m3; positivity, finite state and determinism.

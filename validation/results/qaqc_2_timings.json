@@ -1,0 +1,345 @@
+{
+  "config": {
+    "length": 40,
+    "width": 40,
+    "slope": 0.35,
+    "dx": 0.25,
+    "years": 3000,
+    "dt": 1.0,
+    "diffusivity": 0.001,
+    "transport_law": "linear",
+    "critical_slope": 1.25,
+    "soil_model": true,
+    "initial_soil_depth": 0.8,
+    "soil_production_max": 0.0001,
+    "soil_production_scale": 0.5,
+    "transport_depth_scale": 0.2,
+    "rock_to_soil_dilation": 2.0,
+    "bedrock_pluck_fraction": 0.3,
+    "tree_throw": true,
+    "infill_fraction": 0.3,
+    "infill_critical_slope": 1.07,
+    "fresh_diffusivity": 0.2,
+    "fresh_decay_time": 3.0,
+    "fresh_margin": 0.5,
+    "wind_direction_deg": 0.0,
+    "wind_concentration": 0.0,
+    "stand_structure": "all-aged",
+    "thin_soil_depth": 0.5,
+    "disturbance": "none",
+    "disturbance_interval": 0.0,
+    "first_disturbance": null,
+    "disturbance_severity": 1.0,
+    "storm_uproot_fraction": 0.8,
+    "storm_size_exponent": 1.0,
+    "storm_min_age": 15.0,
+    "snag_fall_rate": null,
+    "root_decay_time": 15.0,
+    "root_cycle": false,
+    "root_biomass": 4.4,
+    "root_turnover": 0.45,
+    "root_density": 400.0,
+    "root_beta": 0.95,
+    "a_horizon_depth": 0.2,
+    "baselevel_lowering_rate": 0.0,
+    "n_snapshots": 2,
+    "record_interval": 50,
+    "seed": 42
+  },
+  "python": "3.14.7 (tags/v3.14.7:823f032, Aug  5 2026, 10:51:32) [MSC v.1944 64 bit (AMD64)]",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "numpy": "2.5.3",
+  "runs": {
+    "original": {
+      "pine": {
+        "run_s": [
+          5.165504800000008,
+          4.539182100000062
+        ],
+        "best_s": 4.539182100000062,
+        "summary_cold_s": 0.1529376000000866,
+        "summary_warm_s": 0.15744539999991503,
+        "fingerprint": "3429412fd1496683b5d6edba686da01ee8de3a1ee3436f47ed319216a3fbfc0a"
+      },
+      "deciduous": {
+        "run_s": [
+          5.33470299999999,
+          4.333195699999806
+        ],
+        "best_s": 4.333195699999806,
+        "summary_cold_s": 0.11064710000005107,
+        "summary_warm_s": 0.11239599999998973,
+        "fingerprint": "c95ea79cb451e9c9981bc3c0a72adf9ecd1d46e54ed0afd87deb4287a95e1dbd"
+      },
+      "aspen": {
+        "run_s": [
+          11.19162950000009,
+          10.416690900000049
+        ],
+        "best_s": 10.416690900000049,
+        "summary_cold_s": 0.14349499999980253,
+        "summary_warm_s": 0.14279270000020006,
+        "fingerprint": "e6191915c360773ec9fb3f5b5f3ce5ce687cb43c17cdbada95042165067899f7"
+      },
+      "spruce": {
+        "run_s": [
+          25.764730599999893,
+          24.663255899999967
+        ],
+        "best_s": 24.663255899999967,
+        "summary_cold_s": 0.1960678000000371,
+        "summary_warm_s": 0.1741612000000714,
+        "fingerprint": "5276ad6b81f4c064fb918fba7b7dfc01ff0dc06b270b9d63f24cccc334c6ec4e"
+      },
+      "douglas_fir": {
+        "run_s": [
+          10.02793440000005,
+          10.41311450000012
+        ],
+        "best_s": 10.02793440000005,
+        "summary_cold_s": 0.2779794000000493,
+        "summary_warm_s": 0.25684159999991607,
+        "fingerprint": "ce810f647ce92f3d2957a9021c269945a138664a91d736460d0ed1ebb385909e"
+      },
+      "oak": {
+        "run_s": [
+          11.039298700000018,
+          3.5909108000000742
+        ],
+        "best_s": 3.5909108000000742,
+        "summary_cold_s": 0.09577209999997649,
+        "summary_warm_s": 0.08800390000010339,
+        "fingerprint": "1144c60585469232609652a3b9a65e7d41e046b2d7afdbf58e7aa7cb3e994af6"
+      },
+      "lodgepole_pine": {
+        "run_s": [
+          5.0963586999998824,
+          5.141060599999946
+        ],
+        "best_s": 5.0963586999998824,
+        "summary_cold_s": 0.13138129999992998,
+        "summary_warm_s": 0.13048079999998663,
+        "fingerprint": "ab3365ba0186eb28e2796c32defb15d6c1a1bc21705efe88dd0c925105dad5cf"
+      },
+      "ponderosa_pine": {
+        "run_s": [
+          2.127525500000047,
+          2.1587834999997995
+        ],
+        "best_s": 2.127525500000047,
+        "summary_cold_s": 0.12845119999997223,
+        "summary_warm_s": 0.12624819999996362,
+        "fingerprint": "81168aa307c4fe4449987d4112d898f2ea380c41df6a21fb82b623992f4c80e7"
+      },
+      "eastern_hemlock": {
+        "run_s": [
+          4.497776299999941,
+          4.647519800000055
+        ],
+        "best_s": 4.497776299999941,
+        "summary_cold_s": 0.12265950000005432,
+        "summary_warm_s": 0.12074550000011186,
+        "fingerprint": "cbb0e6722c3158adc6d9e4429a8ef869d18d350df9797bff12783a1568b16f2e"
+      },
+      "renderer": {
+        "frames": 39,
+        "seconds": 0.2163185000001704,
+        "sha256": "882a813308ef1c34b813b86cf46a38b5d049b2b645a5afe48011328af582655e"
+      }
+    },
+    "corrected": {
+      "pine": {
+        "run_s": [
+          3.9581828999998834,
+          4.392022499999939
+        ],
+        "best_s": 3.9581828999998834,
+        "summary_cold_s": 0.13511369999991985,
+        "summary_warm_s": 0.000416099999938524,
+        "fingerprint": "2e617b4575461312724ebe933adc87efde6815444dbbfb7cbc1453d2abc54b84"
+      },
+      "deciduous": {
+        "run_s": [
+          5.435896800000137,
+          4.607464800000116
+        ],
+        "best_s": 4.607464800000116,
+        "summary_cold_s": 0.10150109999995038,
+        "summary_warm_s": 0.000244900000097914,
+        "fingerprint": "384762c5e3e92a26a72a3475f92d882f73d159f47a5d961c4b58cc353617e528"
+      },
+      "aspen": {
+        "run_s": [
+          9.835179000000153,
+          9.096672099999978
+        ],
+        "best_s": 9.096672099999978,
+        "summary_cold_s": 0.11255320000009306,
+        "summary_warm_s": 0.0008976999999958934,
+        "fingerprint": "8dfc1e4295d6a9630967d3cf93d8517f1a5a672c639a0ab222b3199080ace5fa"
+      },
+      "spruce": {
+        "run_s": [
+          9.587592700000187,
+          9.76500800000008
+        ],
+        "best_s": 9.587592700000187,
+        "summary_cold_s": 0.074075700000094,
+        "summary_warm_s": 0.0006005000000186556,
+        "fingerprint": "188905aadaca10e141599438ea8c5d42e0440db7d7caadbeef52c9ea6ba9a738"
+      },
+      "douglas_fir": {
+        "run_s": [
+          3.096950399999969,
+          2.9618646999999783
+        ],
+        "best_s": 2.9618646999999783,
+        "summary_cold_s": 0.15442200000006778,
+        "summary_warm_s": 0.00030990000004749163,
+        "fingerprint": "5daebf2f6f410e78a0c98452da4b3adf3757b5affbbd9f7b387fbcdd6bb01e2d"
+      },
+      "oak": {
+        "run_s": [
+          5.204996499999879,
+          4.931836300000214
+        ],
+        "best_s": 4.931836300000214,
+        "summary_cold_s": 0.0846779000000879,
+        "summary_warm_s": 0.0003322000000025582,
+        "fingerprint": "2c48781fa2b21c88b2f3e6630ea64097c3734af5bc0c8e824a11bb7b0e25cb28"
+      },
+      "lodgepole_pine": {
+        "run_s": [
+          7.1154200999999375,
+          6.3487305000001015
+        ],
+        "best_s": 6.3487305000001015,
+        "summary_cold_s": 0.12343280000004597,
+        "summary_warm_s": 0.000509499999907348,
+        "fingerprint": "dd9ca52140c49afe46d0a3a58fa33fae8e4ce8264accfa7ae874761b6a5909c4"
+      },
+      "ponderosa_pine": {
+        "run_s": [
+          2.7824576999998953,
+          2.5730968999998822
+        ],
+        "best_s": 2.5730968999998822,
+        "summary_cold_s": 0.12296339999988959,
+        "summary_warm_s": 0.0002062999999452586,
+        "fingerprint": "81168aa307c4fe4449987d4112d898f2ea380c41df6a21fb82b623992f4c80e7"
+      },
+      "eastern_hemlock": {
+        "run_s": [
+          7.103974899999912,
+          6.5344921999999315
+        ],
+        "best_s": 6.5344921999999315,
+        "summary_cold_s": 0.12970119999999952,
+        "summary_warm_s": 0.00044050000019524305,
+        "fingerprint": "b05ce9f3b45db6864496e3c0f89be507aa3ed22c7592c4883351575bdf854487"
+      },
+      "renderer": {
+        "frames": 39,
+        "seconds": 0.20920129999990422,
+        "sha256": "753846983a47b5d1c494257d56119292ddc6379cfcc786ba5269c782b8a80b28"
+      }
+    },
+    "optimised": {
+      "pine": {
+        "run_s": [
+          5.274047399999972,
+          4.071299999999837
+        ],
+        "best_s": 4.071299999999837,
+        "summary_cold_s": 0.1398397999998906,
+        "summary_warm_s": 0.0005129000001034001,
+        "fingerprint": "2e617b4575461312724ebe933adc87efde6815444dbbfb7cbc1453d2abc54b84"
+      },
+      "deciduous": {
+        "run_s": [
+          4.984132499999987,
+          5.081565199999886
+        ],
+        "best_s": 4.984132499999987,
+        "summary_cold_s": 0.08886050000000978,
+        "summary_warm_s": 0.00040289999992637604,
+        "fingerprint": "384762c5e3e92a26a72a3475f92d882f73d159f47a5d961c4b58cc353617e528"
+      },
+      "aspen": {
+        "run_s": [
+          10.86172089999991,
+          10.304414599999745
+        ],
+        "best_s": 10.304414599999745,
+        "summary_cold_s": 0.19003320000001622,
+        "summary_warm_s": 0.0019695999999385094,
+        "fingerprint": "8dfc1e4295d6a9630967d3cf93d8517f1a5a672c639a0ab222b3199080ace5fa"
+      },
+      "spruce": {
+        "run_s": [
+          9.140295900000183,
+          8.98730979999982
+        ],
+        "best_s": 8.98730979999982,
+        "summary_cold_s": 0.07735999999977139,
+        "summary_warm_s": 0.0005764000002272951,
+        "fingerprint": "188905aadaca10e141599438ea8c5d42e0440db7d7caadbeef52c9ea6ba9a738"
+      },
+      "douglas_fir": {
+        "run_s": [
+          3.2436109000000215,
+          3.2520842999997512
+        ],
+        "best_s": 3.2436109000000215,
+        "summary_cold_s": 0.1267827000001489,
+        "summary_warm_s": 0.0001822999997784791,
+        "fingerprint": "5daebf2f6f410e78a0c98452da4b3adf3757b5affbbd9f7b387fbcdd6bb01e2d"
+      },
+      "oak": {
+        "run_s": [
+          4.410825300000397,
+          4.158179399999881
+        ],
+        "best_s": 4.158179399999881,
+        "summary_cold_s": 0.08379050000030475,
+        "summary_warm_s": 0.00034700000014709076,
+        "fingerprint": "2c48781fa2b21c88b2f3e6630ea64097c3734af5bc0c8e824a11bb7b0e25cb28"
+      },
+      "lodgepole_pine": {
+        "run_s": [
+          6.13157160000037,
+          6.587607899999966
+        ],
+        "best_s": 6.13157160000037,
+        "summary_cold_s": 0.14238580000028378,
+        "summary_warm_s": 0.0004689999996116967,
+        "fingerprint": "dd9ca52140c49afe46d0a3a58fa33fae8e4ce8264accfa7ae874761b6a5909c4"
+      },
+      "ponderosa_pine": {
+        "run_s": [
+          2.5884313999999904,
+          2.404871599999751
+        ],
+        "best_s": 2.404871599999751,
+        "summary_cold_s": 0.12409419999994498,
+        "summary_warm_s": 0.0001495999999860942,
+        "fingerprint": "81168aa307c4fe4449987d4112d898f2ea380c41df6a21fb82b623992f4c80e7"
+      },
+      "eastern_hemlock": {
+        "run_s": [
+          5.366887700000007,
+          5.140053600000101
+        ],
+        "best_s": 5.140053600000101,
+        "summary_cold_s": 0.11550519999991593,
+        "summary_warm_s": 0.0004165999998804182,
+        "fingerprint": "b05ce9f3b45db6864496e3c0f89be507aa3ed22c7592c4883351575bdf854487"
+      },
+      "renderer": {
+        "frames": 39,
+        "seconds": 0.2010165000001507,
+        "sha256": "753846983a47b5d1c494257d56119292ddc6379cfcc786ba5269c782b8a80b28"
+      }
+    }
+  }
+}
