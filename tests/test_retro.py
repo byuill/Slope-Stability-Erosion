@@ -81,9 +81,9 @@ class CaptureTests(unittest.TestCase):
             p = Path(d) / "a.gif"
             tr.save_gif(r, p, scale=1, fps=10)
             from PIL import Image
-            im = Image.open(p)
-            self.assertEqual(im.size, (320, 200))
-            self.assertEqual(getattr(im, "n_frames", 1), 8)
+            with Image.open(p) as im:
+                self.assertEqual(im.size, (320, 200))
+                self.assertEqual(getattr(im, "n_frames", 1), 8)
 
 
 class DisturbanceFrameTests(unittest.TestCase):
@@ -148,6 +148,74 @@ class SpriteTests(unittest.TestCase):
 
 @unittest.skipUnless(importlib.util.find_spec("tkinter") is not None, "tkinter not available")
 class GuiImportTests(unittest.TestCase):
+    def test_worker_cancellation_stops_rendering(self):
+        import queue
+        import threading
+        from unittest.mock import Mock, patch
+        import TreeThrowGUI as G
+        stop, messages = threading.Event(), queue.Queue()
+        renderer = Mock()
+        def render(i):
+            stop.set()
+            return np.zeros((tr.H_PX, tr.W_PX, 3), dtype=np.uint8)
+        renderer.render.side_effect = render
+        with patch.object(G.tr, "run_with_frames", return_value=(Mock(), [Mock()] * 10, Mock())), \
+                patch.object(G.tr, "RetroRenderer", return_value=renderer):
+            G._run_worker(tt.SPECIES["pine"], tt.HillslopeConfig(), 10, stop, messages)
+        self.assertEqual(renderer.render.call_count, 1)
+        queued = list(messages.queue)
+        tags = [msg[0] for msg in queued]
+        self.assertIn("done", tags)
+        self.assertNotIn("error", tags)
+        done = next(msg for msg in queued if msg[0] == "done")
+        self.assertEqual(len(done[5]), 10)
+        self.assertIsNotNone(done[5][0])
+        self.assertTrue(all(img is None for img in done[5][1:]))
+
+    def test_stopped_frames_can_be_displayed_lazily(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        import TreeThrowGUI as G
+        rgb = np.zeros((tr.H_PX, tr.W_PX, 3), dtype=np.uint8)
+        app = SimpleNamespace(rendered=[None], renderer=Mock(),
+                              _parse=lambda target, key: 1 if key == "scale" else False)
+        app.renderer.render.return_value = rgb
+        np.testing.assert_array_equal(G.TreeThrowApp._display_rgb(app, 0), rgb)
+        G.TreeThrowApp._display_rgb(app, 0)
+        app.renderer.render.assert_called_once_with(0)
+
+    def test_stop_during_simulation_keeps_partial_model(self):
+        import queue
+        import threading
+        from unittest.mock import Mock, patch
+        import TreeThrowGUI as G
+        stop, messages = threading.Event(), queue.Queue()
+        partial, frames, meta = Mock(), [Mock(), Mock()], Mock()
+        def stopped_run(*args, **kwargs):
+            stop.set()
+            return partial, frames, meta
+        renderer = Mock()
+        with patch.object(G.tr, "run_with_frames", side_effect=stopped_run), \
+                patch.object(G.tr, "RetroRenderer", return_value=renderer):
+            G._run_worker(tt.SPECIES["pine"], tt.HillslopeConfig(), 10, stop, messages)
+        renderer.render.assert_not_called()
+        done = next(msg for msg in list(messages.queue) if msg[0] == "done")
+        self.assertIs(done[1], partial)
+        self.assertIs(done[2], frames)
+        self.assertEqual(done[5], [None, None])
+
+    def test_worker_with_pending_stop_does_not_start_model(self):
+        import queue
+        import threading
+        from unittest.mock import patch
+        import TreeThrowGUI as G
+        stop, messages = threading.Event(), queue.Queue()
+        stop.set()
+        with patch.object(G.tr, "run_with_frames") as run:
+            G._run_worker(tt.SPECIES["pine"], tt.HillslopeConfig(), 10, stop, messages)
+        run.assert_not_called()
+        self.assertEqual(messages.get_nowait(), ("cancelled",))
+
     def test_gui_module_imports_and_parameters_are_valid(self):
         import TreeThrowGUI as G
         from dataclasses import fields

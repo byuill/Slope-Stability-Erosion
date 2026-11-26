@@ -242,6 +242,35 @@ class ScrollFrame(ttk.Frame):
 # ----------------------------------------------------------------------------
 
 
+def _run_worker(sp, cfg, n_frames, stop, messages):
+    """Compute and render off-thread; communicate only through the queue.
+
+    Keep the simulated result on Stop.  Any unrendered frames are left for lazy
+    display on the GUI thread, so stopping/closing cannot leave a long animation
+    render running in the background.
+    """
+    try:
+        t0 = time.time()
+        if stop.is_set():
+            messages.put(("cancelled",))
+            return
+        model, frames, meta = tr.run_with_frames(
+            sp, cfg, n_frames=n_frames,
+            progress=lambda f, m: messages.put(("progress", 0.9 * f, m)), stop=stop)
+        messages.put(("progress", 0.9, "rendering animation…"))
+        rend = tr.RetroRenderer(frames, meta)
+        imgs = [None] * len(frames)
+        for k in range(len(frames)):
+            if stop.is_set():
+                break
+            imgs[k] = rend.render(k)
+            if k % 10 == 0:
+                messages.put(("progress", 0.9 + 0.1 * k / len(frames), f"rendering frame {k}"))
+        messages.put(("done", model, frames, meta, rend, imgs, time.time() - t0))
+    except Exception:       # noqa: BLE001
+        messages.put(("error", traceback.format_exc()))
+
+
 class TreeThrowApp(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -659,29 +688,13 @@ class TreeThrowApp(tk.Tk):
         self.log(f"Run: {sp.key}, L={cfg.length} m, W={cfg.width} m, S={cfg.slope}, {cfg.years:.0f} yr, "
                  f"disturbance={cfg.disturbance}")
 
-        def work():
-            try:
-                t0 = time.time()
-                model, frames, meta = tr.run_with_frames(
-                    sp, cfg, n_frames=n_frames,
-                    progress=lambda f, m: self.queue.put(("progress", 0.9 * f, m)), stop=self.stop_event)
-                self.queue.put(("progress", 0.9, "rendering animation…"))
-                rend = tr.RetroRenderer(frames, meta)
-                imgs = []
-                for k in range(len(frames)):
-                    imgs.append(rend.render(k))
-                    if k % 10 == 0:
-                        self.queue.put(("progress", 0.9 + 0.1 * k / len(frames), f"rendering frame {k}"))
-                self.queue.put(("done", model, frames, meta, rend, imgs, time.time() - t0))
-            except Exception:       # noqa: BLE001
-                self.queue.put(("error", traceback.format_exc()))
-
-        self.worker = threading.Thread(target=work, daemon=True)
+        self.worker = threading.Thread(target=_run_worker,
+                                       args=(sp, cfg, n_frames, self.stop_event, self.queue), daemon=True)
         self.worker.start()
 
     def stop_run(self):
         self.stop_event.set()
-        self.status.config(text="Stopping after the current step…")
+        self.status.config(text="Stopping after the current step or frame…")
 
     def _poll(self):
         try:
@@ -692,6 +705,11 @@ class TreeThrowApp(tk.Tk):
                     self.status.config(text=msg[2])
                 elif msg[0] == "done":
                     self._on_done(*msg[1:])
+                elif msg[0] == "cancelled":
+                    self.run_btn.config(state="normal")
+                    self.stop_btn.config(state="disabled")
+                    self.status.config(text="Run cancelled; previous results retained.")
+                    self.log("Run cancelled; previous results retained.")
                 elif msg[0] == "error":
                     self.run_btn.config(state="normal")
                     self.stop_btn.config(state="disabled")
@@ -712,13 +730,14 @@ class TreeThrowApp(tk.Tk):
                                 f"{len(frames)} frames, {secs:.1f} s.")
         self.log(f"Finished{stopped} in {secs:.1f} s: {model.n_events} uprootings, {len(frames)} frames.")
         self.scrub.config(to=max(len(imgs) - 1, 0))
-        self.goto(0)
+        self.goto(len(frames) - 1 if self.stop_event.is_set() else 0)
         self.right_nb.select(0)
         self.draw_results()
         self.write_summary()
         if self._parse("anim", "save_results"):
             self.save_results(Path(self._parse("anim", "outdir")))
-        self.toggle_play(force=True)
+        if not self.stop_event.is_set():
+            self.toggle_play(force=True)
 
     # ---------------------------------------------------------------- results
     def draw_results(self):
@@ -813,6 +832,8 @@ class TreeThrowApp(tk.Tk):
 
     # ---------------------------------------------------------------- player
     def _display_rgb(self, i):
+        if self.rendered[i] is None:
+            self.rendered[i] = self.renderer.render(i)
         return tr.upscale(self.rendered[i], int(self._parse("anim", "scale")), self._parse("anim", "scanlines"))
 
     def _show(self, i):
