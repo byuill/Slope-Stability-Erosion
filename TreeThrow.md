@@ -12,6 +12,8 @@ python TreeThrow.py --species pine --length 60 --width 30 --slope 0.4
 python TreeThrow.py --species aspen --slope-deg 25 --years 3000
 python TreeThrow.py --compare --length 50 --width 20 --slope 0.35   # all four species
 python TreeThrow.py --species deciduous --no-tree-throw   # diffusion-only control
+python TreeThrow.py --species pine --disturbance fire --first-disturbance 300 --years 600
+python TreeThrow.py --species spruce --disturbance windstorm --disturbance-interval 200 --disturbance-severity 0.3
 python TreeThrow.py --species-file my_species.json        # custom species
 ```
 
@@ -23,12 +25,16 @@ Requires `numpy` and `matplotlib` (`scipy` is optional). Runs headless (Agg back
 |---|---|
 | Background diffusion | `q = -D grad z` (linear) or `D / (1 - (S/Sc)^2)` (nonlinear, `--transport nonlinear`); scaled by `1 - exp(-h/h*)` when soil is tracked |
 | Stand dynamics | Every tree has a position, an age, a lifespan drawn from N(mean, sd), and a mature root-plate diameter and depth drawn from lognormals with negative correlation (`size_depth_correlation`; wide plates are shallow, Zadrożny et al. 2017). Diameter grows as `1 - exp(-3 age / maturity_age)`; depth grows three times faster. Dead trees are replaced after an exponential regeneration delay, so stand density stays constant. |
-| Uprooting | A fraction `uproot_fraction` of deaths uproot. The rest snap or die standing and move no soil. |
+| Mortality | Trees die at their senescence lifespan or earlier, with a constant annual background probability (`background_mortality`), so small trees die too (Šamonil et al. 2017; Gabet & Mudd 2010). Stand density is held exactly at the species value. |
+| Uprooting | Trees younger than `min_uproot_age` snap or die standing (Gabet & Mudd 2010: 80 yr for Douglas fir). Older trees uproot with probability `uproot_fraction`. The rest snap or die standing and move no soil. |
+| Disturbance (optional) | `--disturbance windstorm`: storms kill a share of trees, preferentially large ones (Constantine et al. 2012), and most uproot. `--disturbance fire`: fire kills trees standing; snags topple at `snag_fall_rate` and their root plates decay over `root_decay_time` (Gallaway et al. 2009). Events recur at `disturbance_interval` (exponential waiting time) or once at `first_disturbance`. Off by default. |
 | Fall direction | von Mises. Its mean vector is `fall_slope_bias * (local gradient over ~2R)` plus an optional wind vector (`--wind-dir`, `--wind-kappa`). |
 | Pit | Flat-floored bowl with depth profile `H (1 − ρⁿ)` (`pit_shape_exponent`, default n = 4, which has the volume of a half-ellipsoid; n = 2 is a paraboloid), equivalent radius R, `pit_aspect` (default 1.5) times wider across the fall line than along it. It is limited by soil thickness, and a fraction (`bedrock_pluck_fraction`) of root penetration below the soil plucks bedrock. That rock becomes soil, dilated by `rho_r/rho_s`. |
 | Mound | The root plate rotates about a hinge at the pit edge. Soil is deposited as an elliptical mound as long as the pit, centred `a + c(n) H` from the stump along the fall line (a = semi-axis along the fall line; c = depth of the excavated soil's centroid, 0.4 H for n = 4). |
 | Infill | A fraction of root-plate soil falls back into the pit: `f0 (1 - S_fall / S_crit)`, clipped to 0–0.95. `S_fall` is the ground gradient along the fall direction, `f0 = 0.3` (`--infill`) and `S_crit = tan 47°` (Norman et al. 1995, secondary). Downslope falls shed more soil away from the pit, so displaced volume grows with slope. |
 | Pit-mound collapse | Pit, mound and a 0.5 m margin are marked as fresh soil. This soil diffuses with an extra `D_f exp(-age/τ)`, D_f = 0.20 m²/yr and τ = 3 yr (`--fresh-diffusivity`, `--fresh-decay-time`), calibrated to the 1–5 yr spruce chronosequence of Zadrożny et al. (2017). The collapse acts on relief relative to the surrounding surface, inside a window with no-flux borders, so it conserves volume. |
+| Thin soils | Where soil is thinner than 0.5 m, root plates are shallower, down to half depth on bare rock (Gabet & Mudd 2010). |
+| Root cycling (optional) | `--root-cycle` adds the diffusivity of soil moved by root growth and decay (Hoffman & Anderson 2013): roots follow `Y = 1 − β^(100z)`, and only roots in the A horizon lift the surface. Off by default, because the background diffusivity already includes it with other creep. |
 | Soil production | `P = P0 exp(-h/h0)` |
 | Boundaries | Ridge (x = 0): no flux; soil thrown over the divide is mirrored back (symmetric divide). Channel (x = L): fixed or lowering elevation, removes all sediment delivered to it. Lateral boundaries are periodic. |
 
@@ -37,23 +43,28 @@ Requires `numpy` and `matplotlib` (`scipy` is optional). Runs headless (Agg back
 | Parameter | pine | deciduous | aspen | spruce |
 |---|---|---|---|---|
 | Mean lifespan (yr) | 200 ± 60 | 250 ± 75 | 90 ± 25 | 220 ± 60 |
-| Stand density (stems/ha) | 350 | 220 | 1100 | 500 |
-| Uprooting share of mortality | 0.35 | 0.55 | 0.30 | 0.60 |
+| Stand density (stems/ha) | 350 | 280 | 1100 | 250 |
+| Background mortality (/yr) | 0.003 | 0.005 | 0.010 | 0.020 |
+| Minimum uprooting age (yr) | 80 | 80 | 20 | 30 |
+| P(uproot \| eligible death) | 0.19 | 0.40 | 0.25 | 0.85 |
 | Mature root-plate diameter (m) | 2.4 | 3.0 | 1.5 | 3.3 |
 | Mature root-plate depth (m) | 1.0 | 0.75 | 0.5 | 1.4* |
 | Pit width / length | 1.5 | 1.5 | 1.5 | 1.54 |
 | Size–depth correlation | −0.6 | −0.6 | −0.6 | −0.8 |
 | Maturity age (yr) | 80 | 100 | 40 | 70 |
 | Regeneration delay (yr) | 10 | 5 | 2 | 10 |
-| → Uprootings (/ha/yr) | 0.58 | 0.47 | 3.59 | 1.30 |
-| → Mean displaced volume (m³) | 2.1 | 2.5 | 0.42 | 5.6 |
-| → Expected tree-throw D at S = 0.35, uprooting only (m²/yr) | 2.0e-4 | 2.2e-4 | 1.4e-4 | 1.6e-3 |
+| → Deaths (/ha/yr) | 2.2 | 1.9 | 18 | 4.3 |
+| → Uprooting share of deaths | 15 % | 26 % | 20 % | 46 % |
+| → Uprootings (/ha/yr) | 0.32 | 0.52 | 3.8 | 2.0 |
+| → Mean displaced volume (m³) | 2.1 | 2.5 | 0.40 | 4.7 |
+| → Expected tree-throw D at S = 0.35, uprooting only (m²/yr) | 1.1e-4 | 2.4e-4 | 1.4e-4 | 1.9e-3 |
 
 \*Root-plate thickness. About 17 % of the soil falls straight back on a 25° slope, leaving a 1.16 m open pit. Collapse brings it to the observed 0.95 m within a year.
 
-* **Spruce** is calibrated to 75 uprooted Norway spruce in Babia Góra (Zadrożny et al. 2017). Its pit depth, volume, shape and 1–5 yr degradation, and its size–depth correlation, come from that study.
-* **Deciduous** root-plate size is set so displaced volume (2.5 m³) matches published beech and old-growth values (2.4–2.8 m³). Its uprooting share gives an 11–18 % tree-throw share of hillslope flux, as Doane et al. (2021) measured for southern-Indiana hardwoods.
-* **Pine** and **aspen** remain literature-informed estimates; no species-specific validation data were available.
+* **Spruce**: the pit depth, volume, shape, 1–5 yr degradation and size–depth correlation come from 75 uprooted Norway spruce in Babia Góra (Zadrożny et al. 2017). Mortality, uprooting share and rate come from the Boubín and Žofín mountain reserves (Šamonil et al. 2017).
+* **Deciduous**: root-plate size gives a displaced volume of 2.5 m³, matching beech and old-growth values of 2.4–2.8 m³. Mortality, uprooting share (~27 %) and rate (~0.5 /ha/yr) follow Šamonil's lowland and highland reserves. Together they give an 11–18 % tree-throw share of hillslope flux, as Doane et al. (2021) measured for southern-Indiana hardwoods.
+* **Pine**: mortality, topple share (15 %) and minimum topple age (80 yr) follow Gabet & Mudd's (2010) Douglas-fir parameters. Root-plate size remains an estimate.
+* **Aspen** remains an estimate; no aspen-specific data were available.
 
 These are representative, literature-informed values in round numbers. Calibrate
 them against stand inventories and pit-mound surveys before applying them to a
@@ -86,7 +97,10 @@ For each species, in `--output/<species>/`:
 * the diffusion volume balance and the linear flux `D·S`;
 * the nonlinear flux enhancement and convex crest formation;
 * simulated vs. analytic tree-throw diffusivity and event rate;
-* elliptical pits, slope-dependent infill and the size–depth anticorrelation;
+* elliptical, flat-floored pits, slope-dependent infill and the size–depth anticorrelation;
+* background mortality and minimum uprooting age against the analytic stand rates;
+* size-selective windstorms, fire snags with decaying root plates, and thin-soil root plates;
+* the root-cycle flux formula against Hoffman & Anderson's (2013) published values;
 * volume conservation, smoothing and switch-off of fresh pit-mound collapse;
 * seed reproducibility and the CLI.
 
@@ -99,4 +113,10 @@ For each species, in `--output/<species>/`:
 * flux shares and magnitudes;
 * pit-mound cover, mound persistence and topographic roughness.
 
-Zadrożny et al. (2017) and Doane et al. (2021) were read in full (`validation/zadrozny.py`, `validation/doane.py`). The other benchmarks come from abstracts and search summaries and are marked *secondary*. Results, figures, the benchmark list and a comparison with the previous model version are in [`validation/results/VALIDATION_REPORT.md`](validation/results/VALIDATION_REPORT.md).
+These sources were read in full:
+
+* Zadrożny et al. (2017) and Doane et al. (2021) (`validation/zadrozny.py`, `validation/doane.py`);
+* Šamonil et al. (2017), Gabet & Mudd (2010), Constantine et al. (2012) and Hoffman & Anderson (2013) (`validation/forest_papers.py`);
+* the Harvard Forest HF320-03 data summary (`validation/forest_papers.py`).
+
+Gallaway et al. (2009) was read from its abstract and introduction only. The remaining benchmarks come from abstracts and search summaries and are marked *secondary*. Results, figures, the benchmark list and a comparison with the previous model version are in [`validation/results/VALIDATION_REPORT.md`](validation/results/VALIDATION_REPORT.md).

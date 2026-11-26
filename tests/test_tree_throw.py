@@ -190,6 +190,93 @@ class FreshCollapseTests(unittest.TestCase):
         np.testing.assert_array_equal(m.z, z1)
 
 
+class ForestDynamicsTests(unittest.TestCase):
+    def test_stand_rates_match_simulation(self):
+        sp = tt.SPECIES["spruce"]
+        cfg = tt.HillslopeConfig(length=40, width=40, slope=0.3, dx=0.5, years=600, diffusivity=0.0,
+                                 soil_model=False, fresh_diffusivity=0.0, seed=4, n_snapshots=2)
+        m = tt.TreeThrowModel(sp, cfg)
+        m.run(progress=False)
+        s = m.summary()
+        r = tt.stand_rates(sp)
+        self.assertAlmostEqual(s["death_rate_per_ha_yr"] / r["deaths_per_ha_yr"], 1.0, delta=0.12)
+        self.assertAlmostEqual(s["uprooting_share_of_deaths"], r["uprooting_share_of_deaths"], delta=0.05)
+
+    def test_background_mortality_kills_young_trees(self):
+        sp = tt.replace(tt.SPECIES["pine"], background_mortality=0.02, min_uproot_age=0.0)
+        rng = np.random.default_rng(0)
+        life, a = tt.draw_ages_at_death(rng, sp, 20000)
+        self.assertTrue(np.all(a <= life))
+        self.assertAlmostEqual(np.mean(a < life), 1 - np.mean(np.exp(-0.0202 * life)), delta=0.02)
+
+    def test_min_uproot_age_respected(self):
+        sp = tt.replace(tt.SPECIES["aspen"], min_uproot_age=60.0, background_mortality=0.05)
+        cfg = tt.HillslopeConfig(length=30, width=30, slope=0.3, dx=0.5, years=200, diffusivity=0.0,
+                                 soil_model=False, seed=2, n_snapshots=2)
+        m = tt.TreeThrowModel(sp, cfg)
+        m.run(progress=False)
+        Rmin = 0.5 * sp.root_plate_diameter * tt.growth_factor(60.0, sp.maturity_age) * 0.3
+        ev = np.array(m.event_log)
+        self.assertGreater(len(ev), 0)
+        self.assertGreater(ev[:, 3].min(), Rmin)       # no plates from trees younger than 60 yr
+        self.assertLess(tt.stand_rates(sp)["uprooting_share_of_deaths"], sp.uproot_fraction)
+
+    def test_windstorm_kills_large_trees_preferentially(self):
+        cfg = tt.HillslopeConfig(length=80, width=60, slope=0.3, dx=0.5, years=1, diffusivity=0.0, soil_model=False,
+                                 seed=5, n_snapshots=2, disturbance="windstorm", first_disturbance=0.0,
+                                 disturbance_severity=0.3, storm_size_exponent=2.0)
+        m = tt.TreeThrowModel(tt.SPECIES["spruce"], cfg)
+        live = m.age >= 0
+        R_all = tt.plate_at_age(m.sp, m.R_mature[live], m.H_mature[live], m.age[live])[0].mean()
+        m.step()
+        ev = np.array(m.event_log)
+        storm = ev[ev[:, 9] == 1]
+        self.assertEqual(len(m.disturbance_log), 1)
+        self.assertGreater(len(storm), 10)
+        self.assertGreater(storm[:, 3].mean(), R_all)
+
+    def test_fire_snags_fall_later_with_shrinking_root_plates(self):
+        sp = tt.replace(tt.SPECIES["pine"], min_uproot_age=0.0, uproot_fraction=1.0, background_mortality=0.0,
+                        root_plate_diameter_cv=0.0, root_plate_depth_cv=0.0, lifespan_sd=0.0)
+        cfg = tt.HillslopeConfig(length=40, width=40, slope=0.3, dx=0.5, years=60, diffusivity=0.0, soil_model=False,
+                                 seed=6, n_snapshots=2, disturbance="fire", first_disturbance=0.0,
+                                 disturbance_severity=1.0, snag_fall_rate=0.1, root_decay_time=15.0,
+                                 stand_structure="even-aged")
+        m = tt.TreeThrowModel(sp, cfg)
+        m.age[:] = 150.0                                  # a mature, uniform stand
+        n_trees = m.age.size
+        m.run(progress=False)
+        ev = np.array(m.event_log)
+        snag = ev[ev[:, 9] == 2]
+        self.assertGreater(len(snag), 0.8 * n_trees)      # nearly all snags have fallen after 60 yr
+        early, late = snag[snag[:, 0] < 10], snag[snag[:, 0] > 25]
+        self.assertGreater(early[:, 6].mean(), 1.5 * late[:, 6].mean())   # decayed plates hold less soil
+        self.assertGreater(len(early), len(late))
+
+    def test_thin_soil_makes_shallower_plates(self):
+        vols = {}
+        for h in (1.0, 0.1):
+            cfg = tt.HillslopeConfig(length=20, width=10, slope=0.3, dx=0.25, years=1, soil_model=True,
+                                     initial_soil_depth=h, bedrock_pluck_fraction=1.0, rock_to_soil_dilation=1.0,
+                                     infill_fraction=0.0, fresh_diffusivity=0.0, seed=1)
+            m = tt.TreeThrowModel(tt.SPECIES["pine"], cfg)
+            vols[h] = m.uproot(10.0, 5.0, 1.2, 0.8, 0.0)["volume"]
+        self.assertAlmostEqual(vols[0.1] / vols[1.0], 0.5 + 0.5 * 0.1 / 0.5, delta=0.02)
+
+    def test_root_cycle_matches_hoffman_anderson(self):
+        th, a = math.radians(15), (4.4, 0.45, 400.0)
+        betas = np.linspace(0.5, 0.999, 300)
+        self.assertLess(max(tt.root_cycle_flux(th, *a, b, 0.1) for b in betas), 4e-5)
+        self.assertAlmostEqual(tt.root_cycle_flux(th, *a, 0.98, 1.0), 3.8e-4, delta=0.1e-4)
+        self.assertLess(tt.root_cycle_flux(th, *a, 0.8, 1.0), 6e-5)
+        median = a[0] * a[1] / a[2] * math.sin(th) * math.log(0.5) / (100 * math.log(0.95))
+        self.assertAlmostEqual(tt.root_cycle_flux(th, *a, 0.95, None) / median, 1 / math.log(2), places=6)
+        m = model(tree_throw=False, soil_model=False, diffusivity=0.0, root_cycle=True)
+        self.assertGreater(m.D_root, 0)
+        m.step()
+        self.assertGreater(m.moment_diff, 0)
+
+
 class DiffusionTests(unittest.TestCase):
     def test_diffusion_volume_balance(self):
         m = model(tree_throw=False, soil_model=False, diffusivity=0.01)

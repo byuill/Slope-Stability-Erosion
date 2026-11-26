@@ -103,6 +103,7 @@ import math
 import os
 import sys
 from dataclasses import asdict, dataclass, field, replace
+from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -145,13 +146,20 @@ class TreeSpecies:
     regeneration_delay: float = 5.0  # yr, mean delay before a gap is re-stocked
     pit_aspect: float = 1.5       # pit width across fall / length along fall (Zadrożny: 4.23/2.74)
     pit_shape_exponent: float = 4.0  # pit depth profile H (1 - rho^n): 2 = paraboloid, larger = flatter floor
+    background_mortality: float = 0.0  # annual death probability at any age (competition, disease, ...)
+    min_uproot_age: float = 0.0   # yr; younger trees snap or die standing instead of uprooting
     size_depth_correlation: float = -0.6  # correlation of plate diameter and depth (log space)
 
     # ---- derived quantities ------------------------------------------------
     @property
     def uproot_rate_per_ha(self) -> float:
-        """Steady-state uprooting events per hectare per year."""
-        return self.density * self.uproot_fraction / (self.lifespan_mean + self.regeneration_delay)
+        """Steady-state uprooting events per hectare per year (no stand-replacing disturbance)."""
+        return stand_rates(self)["uprootings_per_ha_yr"]
+
+    @property
+    def death_rate_per_ha(self) -> float:
+        """Steady-state tree deaths per hectare per year."""
+        return stand_rates(self)["deaths_per_ha_yr"]
 
     @property
     def mature_pit_volume(self) -> float:
@@ -174,6 +182,8 @@ class TreeSpecies:
             "regeneration_delay": self.regeneration_delay >= 0,
             "pit_aspect": self.pit_aspect > 0,
             "pit_shape_exponent": self.pit_shape_exponent >= 1.0,
+            "background_mortality": 0.0 <= self.background_mortality < 1.0,
+            "min_uproot_age": self.min_uproot_age >= 0.0,
             "size_depth_correlation": -1.0 < self.size_depth_correlation < 1.0,
         }
         bad = [k for k, ok in checks.items() if not ok]
@@ -193,32 +203,38 @@ SPECIES: Dict[str, TreeSpecies] = {
         name="Pine forest (Pinus spp., e.g. ponderosa / lodgepole)",
         description=("Moderately long-lived conifers at intermediate density. "
                      "Tap and sinker roots give a moderately wide but relatively "
-                     "deep root plate; a moderate share of deaths are uprootings, "
-                     "the rest being snags (beetle kill, fire) and stem breakage."),
+                     "deep root plate. Few deaths are uprootings (15 %, as for Douglas "
+                     "fir in Gabet & Mudd 2010) and only trees older than 80 yr topple; "
+                     "the rest are snags (beetle kill, fire) and stem breakage."),
         lifespan_mean=200.0, lifespan_sd=60.0,
         density=350.0,
-        uproot_fraction=0.35,
+        uproot_fraction=0.19,                     # x share of deaths past min_uproot_age -> 15 % of deaths
         root_plate_diameter=2.4, root_plate_diameter_cv=0.25,
         root_plate_depth=1.0, root_plate_depth_cv=0.30,
         maturity_age=80.0,
         dbh=40.0,
         regeneration_delay=10.0,
+        background_mortality=0.003,               # Gabet & Mudd 2010: 1/330 per yr for Douglas fir
+        min_uproot_age=80.0,                      # Gabet & Mudd 2010 (Reid 1981)
     ),
     "deciduous": TreeSpecies(
         key="deciduous",
         name="Deciduous hardwood forest (Acer / Fagus / Quercus)",
-        description=("Long-lived, large-crowned broadleaf trees at low density. "
-                     "Broad, plate-like lateral root systems produce the largest "
-                     "root wads; uprooting is a dominant mortality mode, giving "
-                     "classic pit-and-mound microtopography."),
+        description=("Long-lived, large-crowned broadleaf trees. Broad, plate-like "
+                     "lateral root systems give classic pit-and-mound microtopography. "
+                     "Mortality, uprooting share (~27 %) and rate (~0.5 /ha/yr) follow "
+                     "old-growth beech and oak-ash reserves (Šamonil et al. 2017); the "
+                     "flux share matches southern-Indiana hardwoods (Doane et al. 2021)."),
         lifespan_mean=250.0, lifespan_sd=75.0,
-        density=220.0,
-        uproot_fraction=0.55,
+        density=280.0,                            # Šamonil et al. 2017: 210-297 stems/ha
+        uproot_fraction=0.40,                     # x share past min_uproot_age -> ~27 % of deaths
         root_plate_diameter=3.0, root_plate_diameter_cv=0.30,
         root_plate_depth=0.75, root_plate_depth_cv=0.30,
         maturity_age=100.0,
         dbh=50.0,
         regeneration_delay=5.0,
+        background_mortality=0.005,
+        min_uproot_age=80.0,                      # uprooting uncommon below ~80-100 yr (Schaetzl et al. 1989)
     ),
     "aspen": TreeSpecies(
         key="aspen",
@@ -229,23 +245,27 @@ SPECIES: Dict[str, TreeSpecies] = {
                      "Suckering re-stocks gaps quickly."),
         lifespan_mean=90.0, lifespan_sd=25.0,
         density=1100.0,
-        uproot_fraction=0.30,
+        uproot_fraction=0.25,
         root_plate_diameter=1.5, root_plate_diameter_cv=0.25,
         root_plate_depth=0.5, root_plate_depth_cv=0.30,
         maturity_age=40.0,
         dbh=22.0,
         regeneration_delay=2.0,
+        background_mortality=0.01,                # dense, self-thinning clonal stands (no site data)
+        min_uproot_age=20.0,
     ),
     "spruce": TreeSpecies(
         key="spruce",
         name="Norway spruce forest (Picea abies), upper montane",
         description=("Shallow-rooted conifer at high density; windthrow is the main "
-                     "mortality mode. Wide, plate-like root systems produce large, "
-                     "elliptical pits. Root-plate size and pit geometry are calibrated "
-                     "to 75 pit-mounds in Babia Góra National Park (Zadrożny et al. 2017)."),
+                     "mortality mode and small trees uproot too. Wide, plate-like root "
+                     "systems produce large, elliptical pits. Root-plate size and pit "
+                     "geometry are calibrated to 75 pit-mounds in Babia Góra National Park "
+                     "(Zadrożny et al. 2017); mortality and uprooting rates to the Boubín "
+                     "and Žofín mountain reserves (Šamonil et al. 2017)."),
         lifespan_mean=220.0, lifespan_sd=60.0,
-        density=500.0,
-        uproot_fraction=0.60,
+        density=250.0,                            # Šamonil et al. 2017: ~205-210 stems >= 10 cm DBH /ha
+        uproot_fraction=0.85,                     # -> ~46 % of deaths (Šamonil: 42-50 % in mountains)
         # Plate sized so that, after the soil that falls straight back (~17 % on a 25°
         # slope) and the first year of collapse, the model pit matches the 1-yr pits
         # of Zadrożny et al. (0.95 m deep, ~5 m^3): fresh open pit ~1.16 m deep.
@@ -256,6 +276,8 @@ SPECIES: Dict[str, TreeSpecies] = {
         regeneration_delay=10.0,
         pit_aspect=1.54,
         size_depth_correlation=-0.8,
+        background_mortality=0.02,                # Šamonil et al. 2017: ~2 %/yr of stems die in mountain reserves
+        min_uproot_age=30.0,                      # thin trees uproot readily in the mountains (Šamonil et al. 2017)
     ),
 }
 
@@ -310,6 +332,25 @@ class HillslopeConfig:
     wind_direction_deg: float = 0.0    # azimuth of prevailing fall direction (0 = downslope, 90 = +y)
     wind_concentration: float = 0.0    # von Mises kappa of wind control (0 = no wind bias)
     stand_structure: str = "all-aged"  # 'all-aged' (steady state) or 'even-aged' (post-disturbance)
+    thin_soil_depth: float = 0.5       # m; root plates thin toward half depth on bare rock (Gabet & Mudd 2010); 0 = off
+
+    # Stand-replacing / partial disturbances (off by default)
+    disturbance: str = "none"          # 'none', 'fire' or 'windstorm'
+    disturbance_interval: float = 0.0  # yr, mean return interval (exponential); 0 = only `first_disturbance`
+    first_disturbance: Optional[float] = None  # yr of the first event (default: random draw)
+    disturbance_severity: float = 1.0  # fraction of standing trees killed (windstorm: size-weighted)
+    storm_uproot_fraction: float = 0.8   # share of storm-killed trees that uproot (the rest snap)
+    storm_size_exponent: float = 1.0     # storm kill probability grows as (plate radius / mean)^k
+    snag_fall_rate: float = 0.1        # 1/yr; fire-killed snags topple at this exponential rate
+    root_decay_time: float = 15.0      # yr; a dead tree's root-plate volume decays as exp(-t / tau)
+
+    # Root growth-decay transport (Hoffman & Anderson 2013), added to the background diffusivity
+    root_cycle: bool = False
+    root_biomass: float = 4.4          # kg/m^2 of roots
+    root_turnover: float = 0.45        # 1/yr
+    root_density: float = 400.0        # kg/m^3 of root material
+    root_beta: float = 0.95            # Gale & Grigal rooting-depth parameter
+    a_horizon_depth: Optional[float] = 0.2  # m; roots below it compact soil instead of lifting it
 
     # Base level
     baselevel_lowering_rate: float = 0.0  # m/yr channel incision
@@ -341,6 +382,14 @@ class HillslopeConfig:
                              "(decay time positive).")
         if self.years <= 0 or self.dt <= 0:
             raise ValueError("years and dt must be positive.")
+        if self.disturbance not in ("none", "fire", "windstorm"):
+            raise ValueError("disturbance must be 'none', 'fire' or 'windstorm'.")
+        if not 0 <= self.disturbance_severity <= 1 or not 0 <= self.storm_uproot_fraction <= 1:
+            raise ValueError("disturbance_severity and storm_uproot_fraction must be in [0, 1].")
+        if self.snag_fall_rate < 0 or self.root_decay_time <= 0 or self.disturbance_interval < 0:
+            raise ValueError("snag_fall_rate and disturbance_interval must be >= 0, root_decay_time > 0.")
+        if not 0 < self.root_beta < 1:
+            raise ValueError("root_beta must be in (0, 1).")
 
 
 # ======================================================================
@@ -425,6 +474,58 @@ def draw_lifespans(rng: np.random.Generator, sp: TreeSpecies, n: int) -> np.ndar
     return np.maximum(life, 0.25 * sp.lifespan_mean)
 
 
+def hazard_rate(sp: "TreeSpecies") -> float:
+    """Continuous background mortality hazard (1/yr) equivalent to the annual probability."""
+    return -math.log(1.0 - sp.background_mortality) if sp.background_mortality > 0 else 0.0
+
+
+def draw_ages_at_death(rng: np.random.Generator, sp: "TreeSpecies", n: int):
+    """Lifespans and ages at death: the earlier of senescence and background mortality."""
+    life = draw_lifespans(rng, sp, n)
+    lam = hazard_rate(sp)
+    if lam > 0:
+        return life, np.minimum(rng.exponential(1.0 / lam, n), life)
+    return life, life.copy()
+
+
+@lru_cache(maxsize=64)
+def stand_rates(sp: "TreeSpecies", n: int = 100_000) -> Dict[str, float]:
+    """Steady-state deaths and uprootings per hectare per year for a stand at `density`.
+
+    Each stem slot cycles through a regeneration gap and a tree whose age at death
+    is the earlier of its senescence lifespan and a background-mortality draw; trees
+    younger than `min_uproot_age` never uproot.
+    """
+    rng = np.random.default_rng(12345)
+    _, a = draw_ages_at_death(rng, sp, n)
+    deaths = sp.density / (float(a.mean()) + sp.regeneration_delay)
+    eligible = float(np.mean(a >= sp.min_uproot_age))
+    return {"deaths_per_ha_yr": deaths, "uprootings_per_ha_yr": deaths * sp.uproot_fraction * eligible,
+            "uprooting_share_of_deaths": sp.uproot_fraction * eligible, "mean_age_at_death": float(a.mean())}
+
+
+def root_cycle_flux(slope_rad: float, root_biomass: float, turnover: float, root_density: float,
+                    beta: float, a_horizon: Optional[float]) -> float:
+    """Downslope soil flux (m^2/yr) from root growth and decay (Hoffman & Anderson 2013).
+
+    Roots follow Gale & Grigal's (1987) profile Y = 1 - beta^(100 z); a root at depth
+    z displaces soil normal to the surface and the soil settles vertically on decay,
+    a net move of z sin(theta).  Only roots in the A horizon (z < a_horizon) lift the
+    surface; a_horizon = None counts every root.
+    """
+    lam = -100.0 * math.log(beta)
+    if a_horizon is None:
+        mz = 1.0 / lam
+    else:
+        mz = 1.0 / lam - math.exp(-lam * a_horizon) * (a_horizon + 1.0 / lam)
+    return root_biomass * turnover / root_density * math.sin(slope_rad) * mz
+
+
+def root_cycle_diffusivity(root_biomass, turnover, root_density, beta, a_horizon) -> float:
+    """Low-slope diffusivity (m^2/yr) equivalent to root_cycle_flux (q = D tan(theta))."""
+    return root_cycle_flux(1e-6, root_biomass, turnover, root_density, beta, a_horizon) / math.tan(1e-6)
+
+
 def draw_mature_sizes(rng: np.random.Generator, sp: TreeSpecies, n: int):
     """Mature root-plate equivalent radius and depth (m), correlated in log space."""
     rho = sp.size_depth_correlation
@@ -450,9 +551,11 @@ def expected_tree_throw(sp: TreeSpecies, slope: float, infill_fraction: float = 
     downslope flux q (m^2/yr) and the equivalent linear diffusivity D_tt = q / S.
     """
     rng = np.random.default_rng(seed)
-    life = draw_lifespans(rng, sp, n_samples)
+    _, age_death = draw_ages_at_death(rng, sp, n_samples)
+    age_death = age_death[age_death >= sp.min_uproot_age]     # only these trees can uproot
+    n_samples = age_death.size
     r_m, h_m = draw_mature_sizes(rng, sp, n_samples)
-    r, h = plate_at_age(sp, r_m, h_m, life)
+    r, h = plate_at_age(sp, r_m, h_m, age_death)
     n = sp.pit_shape_exponent
     if soil_depth is None:
         vol = pit_volume_factor(n) * np.pi * r * r * h
@@ -552,6 +655,22 @@ class TreeThrowModel:
         # bounding boxes of disturbances still collapsing.
         self.fresh_t0 = np.full((self.nx, self.ny), -np.inf)
         self.fresh_windows: List[tuple] = []
+        # Standing dead trees (fire-killed), which topple later.
+        self.snags = {k: np.zeros(0) for k in ("x", "y", "R", "H", "t_death", "age_death")}
+        self.n_events_by_cause = {"background": 0, "windstorm": 0, "snag": 0}
+        self.disturbance_log: List[tuple] = []
+        if config.disturbance != "none":
+            if config.first_disturbance is not None:
+                self.next_disturbance = float(config.first_disturbance)
+            elif config.disturbance_interval > 0:
+                self.next_disturbance = float(self.rng.exponential(config.disturbance_interval))
+            else:
+                self.next_disturbance = math.inf
+        else:
+            self.next_disturbance = math.inf
+        self.D_root = (root_cycle_diffusivity(config.root_biomass, config.root_turnover, config.root_density,
+                                              config.root_beta, config.a_horizon_depth)
+                       if config.root_cycle else 0.0)
 
         self._init_stand()
 
@@ -563,15 +682,24 @@ class TreeThrowModel:
     def _init_stand(self) -> None:
         sp, cfg = self.sp, self.cfg
         area_ha = self.L_active * self.W / 1.0e4
-        n = max(int(self.rng.poisson(sp.density * area_ha)), 1)
+        n = max(int(round(sp.density * area_ha)), 1)      # stand density is a parameter, not a draw
         self.tx = self.rng.uniform(0, self.L_active, n)
         self.ty = self.rng.uniform(0, self.W, n)
         self.life = draw_lifespans(self.rng, sp, n)
         self.R_mature, self.H_mature = draw_mature_sizes(self.rng, sp, n)
         if cfg.stand_structure == "all-aged":
-            # Ages for a stationary renewal process (including gaps awaiting regeneration).
-            cycle = self.life + sp.regeneration_delay
-            self.age = self.rng.uniform(0, 1, n) * cycle - sp.regeneration_delay
+            # Ages for a stationary renewal process: survival is exp(-lambda a) up to the
+            # lifespan, and a slot is an unfilled gap for a share delay / (residence + delay).
+            lam = hazard_rate(sp)
+            u = self.rng.uniform(0, 1, n)
+            if lam > 0:
+                self.age = -np.log(1.0 - u * (1.0 - np.exp(-lam * self.life))) / lam
+                resid = (1.0 - np.exp(-lam * self.life)) / lam
+            else:
+                self.age = u * self.life
+                resid = self.life
+            gap = self.rng.uniform(0, 1, n) < sp.regeneration_delay / (resid + sp.regeneration_delay)
+            self.age[gap] = -self.rng.uniform(0, 1, int(gap.sum())) * sp.regeneration_delay
         else:
             self.age = np.zeros(n)
 
@@ -641,6 +769,11 @@ class TreeThrowModel:
         """
         cfg, dx, ca = self.cfg, self.cfg.dx, self.cell_area
         R = max(R, 0.5 * dx)
+        if cfg.soil_model and cfg.thin_soil_depth > 0:
+            # Roots in thin soil are impeded by bedrock: plate depth falls to half on bare rock.
+            i0 = min(max(int(x0 / dx), 0), self.nx - 2)
+            h0 = float(self.h[i0, int(y0 / dx) % self.ny])
+            H *= 0.5 + 0.5 * min(h0 / cfg.thin_soil_depth, 1.0)
         H = max(H, 1e-3)
         k = math.sqrt(self.sp.pit_aspect)
         a_p, b_p = max(R / k, 0.5 * dx), max(R * k, 0.5 * dx)
@@ -807,22 +940,85 @@ class TreeThrowModel:
                     h[neg] = 0.0
             self.h[ix] = h
 
+    def _throw(self, x: float, y: float, R: float, H: float, cause: str) -> None:
+        """Uproot one tree and log the event."""
+        phi = self._fall_direction(x, y, R)
+        ev = self.uproot(x, y, R, H, phi)
+        code = {"background": 0, "windstorm": 1, "snag": 2}[cause]
+        self.event_log.append((self.time, x, y, ev["R"], ev["H"], math.degrees(phi), ev["volume"],
+                               ev["displaced"], ev["export"], code))
+        self.n_events += 1
+        self.n_events_by_cause[cause] += 1
+
     def _tree_step(self, dt: float) -> int:
+        sp = self.sp
+        n0 = self.n_events
         self.age += dt
-        dead = np.flatnonzero(self.age >= self.life)
-        if dead.size == 0:
-            return 0
-        self.n_deaths += dead.size
-        throw = dead[self.rng.random(dead.size) < self.sp.uproot_fraction]
-        for k in throw:
-            R, H = plate_at_age(self.sp, self.R_mature[k], self.H_mature[k], self.life[k])
-            phi = self._fall_direction(self.tx[k], self.ty[k], R)
-            ev = self.uproot(self.tx[k], self.ty[k], R, H, phi)
-            self.event_log.append((self.time, self.tx[k], self.ty[k], ev["R"], ev["H"],
-                                   math.degrees(phi), ev["volume"], ev["displaced"], ev["export"]))
-        self.n_events += throw.size
-        self._replace_trees(dead)
-        return int(throw.size)
+        self._disturbance_step()
+        self._snag_step(dt)
+        dead_mask = self.age >= self.life
+        if sp.background_mortality > 0:
+            p = 1.0 - (1.0 - sp.background_mortality) ** dt
+            dead_mask |= (self.age >= 0) & (self.rng.random(self.age.size) < p)
+        dead = np.flatnonzero(dead_mask)
+        if dead.size:
+            self.n_deaths += dead.size
+            age_death = np.clip(np.minimum(self.age[dead], self.life[dead]), 0.0, None)
+            throw = (age_death >= sp.min_uproot_age) & (self.rng.random(dead.size) < sp.uproot_fraction)
+            for k, a in zip(dead[throw], age_death[throw]):
+                R, H = plate_at_age(sp, self.R_mature[k], self.H_mature[k], a)
+                self._throw(self.tx[k], self.ty[k], R, H, "background")
+            self._replace_trees(dead)
+        return self.n_events - n0
+
+    def _disturbance_step(self) -> None:
+        """Apply a fire or windstorm if one is due."""
+        cfg, sp = self.cfg, self.sp
+        if self.time < self.next_disturbance:
+            return
+        self.next_disturbance = (self.time + float(self.rng.exponential(cfg.disturbance_interval))
+                                 if cfg.disturbance_interval > 0 else math.inf)
+        live = np.flatnonzero(self.age >= 0)
+        if live.size == 0:
+            return
+        R, H = plate_at_age(sp, self.R_mature[live], self.H_mature[live], self.age[live])
+        if cfg.disturbance == "windstorm":
+            # Wind loads scale with tree size, so larger trees are felled preferentially.
+            w = (R / max(float(R.mean()), 1e-9)) ** cfg.storm_size_exponent
+            p = np.clip(cfg.disturbance_severity * w, 0.0, 1.0)
+        else:
+            p = np.full(live.size, cfg.disturbance_severity)
+        hit = self.rng.random(live.size) < p
+        killed = live[hit]
+        self.n_deaths += killed.size
+        if cfg.disturbance == "windstorm":
+            up = (self.age[killed] >= sp.min_uproot_age) & (self.rng.random(killed.size) < cfg.storm_uproot_fraction)
+            for k, r, h in zip(killed[up], R[hit][up], H[hit][up]):
+                self._throw(self.tx[k], self.ty[k], r, h, "windstorm")
+        else:
+            # Fire kills trees standing; they topple later as their roots decay.
+            for key, val in (("x", self.tx[killed]), ("y", self.ty[killed]), ("R", R[hit]), ("H", H[hit]),
+                             ("t_death", np.full(killed.size, self.time)), ("age_death", self.age[killed])):
+                self.snags[key] = np.concatenate([self.snags[key], val])
+        self.disturbance_log.append((self.time, cfg.disturbance, int(killed.size), int(live.size)))
+        self._replace_trees(killed)
+
+    def _snag_step(self, dt: float) -> None:
+        """Topple fire-killed snags; their root plates shrink with time since death."""
+        cfg, sp, sn = self.cfg, self.sp, self.snags
+        if sn["x"].size == 0 or cfg.snag_fall_rate <= 0:
+            return
+        fall = self.rng.random(sn["x"].size) < 1.0 - math.exp(-cfg.snag_fall_rate * dt)
+        if not fall.any():
+            return
+        idx = np.flatnonzero(fall)
+        up = (sn["age_death"][idx] >= sp.min_uproot_age) & (self.rng.random(idx.size) < sp.uproot_fraction)
+        for k in idx[up]:
+            f = math.exp(-(self.time - sn["t_death"][k]) / cfg.root_decay_time) ** (1.0 / 3.0)
+            self._throw(sn["x"][k], sn["y"][k], sn["R"][k] * f, sn["H"][k] * f, "snag")
+        keep = ~fall
+        for key in sn:
+            sn[key] = sn[key][keep]
 
     # ---------------------------------------------------------- diffusion
     def _diffusion_fluxes(self, z: np.ndarray, h: np.ndarray):
@@ -830,8 +1026,9 @@ class TreeThrowModel:
         cfg, dx = self.cfg, self.cfg.dx
         Sx = (z[1:] - z[:-1]) / dx                         # faces between rows i, i+1
         Sy = (np.roll(z, -1, axis=1) - z) / dx             # faces between cols j, j+1
-        Dx = np.full_like(Sx, cfg.diffusivity)
-        Dy = np.full_like(Sy, cfg.diffusivity)
+        D0 = cfg.diffusivity + self.D_root
+        Dx = np.full_like(Sx, D0)
+        Dy = np.full_like(Sy, D0)
         if cfg.transport_law == "nonlinear":
             gyc = (np.roll(z, -1, axis=1) - np.roll(z, 1, axis=1)) / (2 * dx)
             gxc = np.gradient(z, dx, axis=0)
@@ -847,7 +1044,7 @@ class TreeThrowModel:
 
     def _diffusion_step(self, dt: float) -> None:
         cfg, dx = self.cfg, self.cfg.dx
-        if cfg.diffusivity <= 0:
+        if cfg.diffusivity + self.D_root <= 0:
             return
         t_left = dt
         while t_left > 1e-12:
@@ -952,7 +1149,7 @@ class TreeThrowModel:
                                        soil_depth=cfg.initial_soil_depth if cfg.soil_model else None,
                                        bedrock_pluck_fraction=cfg.bedrock_pluck_fraction,
                                        rock_to_soil_dilation=cfg.rock_to_soil_dilation)
-        ev = np.array(self.event_log) if self.event_log else np.zeros((0, 9))
+        ev = np.array(self.event_log) if self.event_log else np.zeros((0, 10))
         prof0, prof1 = self.z_initial.mean(axis=1), self.z.mean(axis=1)
         return {
             "species": asdict(self.sp),
@@ -963,7 +1160,12 @@ class TreeThrowModel:
             "trees_in_stand": int(self.tx.size),
             "tree_deaths": self.n_deaths,
             "uprooting_events": self.n_events,
+            "uprooting_events_by_cause": dict(self.n_events_by_cause),
             "uprooting_rate_per_ha_yr": self.n_events / (area / 1e4) / T,
+            "death_rate_per_ha_yr": self.n_deaths / (area / 1e4) / T,
+            "uprooting_share_of_deaths": self.n_events / self.n_deaths if self.n_deaths else float("nan"),
+            "disturbances": [list(d) for d in self.disturbance_log],
+            "root_cycle_diffusivity_m2_yr": self.D_root,
             "mean_event_volume_m3": float(ev[:, 6].mean()) if len(ev) else float("nan"),
             "mean_displaced_volume_m3": float(ev[:, 7].mean()) if len(ev) else float("nan"),
             "mean_flux_tree_throw_m2_yr": q_tt,
@@ -993,7 +1195,8 @@ class TreeThrowModel:
         with open(outdir / "events.csv", "w", newline="", encoding="utf-8") as fh:
             w = csv.writer(fh)
             w.writerow(["time_yr", "x_m", "y_m", "root_plate_radius_m", "root_plate_depth_m",
-                        "fall_azimuth_deg", "excavated_m3", "displaced_m3", "exported_m3"])
+                        "fall_azimuth_deg", "excavated_m3", "displaced_m3", "exported_m3",
+                        "cause (0 background, 1 windstorm, 2 snag fall)"])
             w.writerows([[f"{v:.6g}" for v in row] for row in self.event_log])
         with open(outdir / "summary.json", "w", encoding="utf-8") as fh:
             json.dump(self.summary(), fh, indent=2)
@@ -1059,7 +1262,7 @@ def plot_run(model: TreeThrowModel, path: Path) -> None:
     else:
         ax.axis("off")
 
-    ev = np.array(model.event_log) if model.event_log else np.zeros((0, 9))
+    ev = np.array(model.event_log) if model.event_log else np.zeros((0, 10))
     if len(ev):
         axp = fig.add_subplot(gs[0, 3], projection="polar")
         axp.hist(np.radians(ev[:, 5]), bins=24, weights=ev[:, 7], color="tab:green", alpha=0.75)
@@ -1175,7 +1378,11 @@ def species_table(slope: float, infill_fraction: float = 0.3, species=None) -> s
     exp = {s.key: expected_tree_throw(s, slope, infill_fraction) for s in species}
     row("Mean lifespan (yr)", lambda s: f"{s.lifespan_mean:.0f} ± {s.lifespan_sd:.0f}", "{}")
     row("Stand density (stems/ha)", lambda s: s.density, "{:.0f}")
-    row("Uprooting share of mortality", lambda s: s.uproot_fraction, "{:.2f}")
+    row("Background mortality (/yr)", lambda s: s.background_mortality, "{:.3f}")
+    row("Min. uprooting age (yr)", lambda s: s.min_uproot_age, "{:.0f}")
+    row("P(uproot | eligible death)", lambda s: s.uproot_fraction, "{:.2f}")
+    row("Deaths (/ha/yr)", lambda s: s.death_rate_per_ha, "{:.2f}")
+    row("Uprooting share of deaths", lambda s: stand_rates(s)["uprooting_share_of_deaths"], "{:.2f}")
     row("Mature root-plate diameter (m)", lambda s: s.root_plate_diameter, "{:.2f}")
     row("Mature root-plate depth (m)", lambda s: s.root_plate_depth, "{:.2f}")
     row("Mature DBH (cm)", lambda s: s.dbh, "{:.0f}")
@@ -1233,6 +1440,15 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--wind-dir", type=float, default=0.0, help="prevailing fall azimuth (deg, 0 = downslope)")
     g.add_argument("--wind-kappa", type=float, default=0.0, help="wind concentration (0 = none)")
     g.add_argument("--baselevel-rate", type=float, default=0.0, help="channel lowering rate (m/yr)")
+    g.add_argument("--root-cycle", action="store_true",
+                   help="add soil transport by root growth and decay (Hoffman & Anderson 2013)")
+
+    g = p.add_argument_group("disturbance")
+    g.add_argument("--disturbance", default="none", choices=["none", "fire", "windstorm"])
+    g.add_argument("--disturbance-interval", type=float, default=0.0, help="mean return interval (yr)")
+    g.add_argument("--first-disturbance", type=float, help="year of the first disturbance")
+    g.add_argument("--disturbance-severity", type=float, default=1.0, help="fraction of trees killed")
+    g.add_argument("--snag-fall-rate", type=float, default=0.1, help="fire-killed snag toppling rate (1/yr)")
 
     g = p.add_argument_group("output")
     g.add_argument("--output", default="tree_throw_output", help="output directory")
@@ -1255,6 +1471,9 @@ def config_from_args(a) -> HillslopeConfig:
         fresh_diffusivity=a.fresh_diffusivity, fresh_decay_time=a.fresh_decay_time,
         wind_direction_deg=a.wind_dir, wind_concentration=a.wind_kappa,
         stand_structure=a.stand_structure, baselevel_lowering_rate=a.baselevel_rate, seed=a.seed,
+        root_cycle=a.root_cycle, disturbance=a.disturbance, disturbance_interval=a.disturbance_interval,
+        first_disturbance=a.first_disturbance, disturbance_severity=a.disturbance_severity,
+        snag_fall_rate=a.snag_fall_rate,
     )
 
 
