@@ -19,6 +19,47 @@ python TreeThrow.py --species-file my_species.json        # custom species
 
 Requires `numpy` and `matplotlib` (`scipy` is optional). Runs headless (Agg backend).
 
+## Graphical interface and retro animation
+
+```bash
+python TreeThrowGUI.py                                       # GUI
+python TreeThrowRetro.py --species spruce --years 1500 \
+    --disturbance windstorm --disturbance-interval 150 --gif storms.gif   # animation only
+```
+
+The GUI needs tkinter. It is included with the python.org and conda builds; on Debian or Ubuntu install it with `sudo apt install python3-tk`.
+
+![GUI with the retro view](docs/gui_retro_view.png)
+
+**Left: parameters, in tabs.**
+
+* **Forest**: species preset, stand dynamics, uprooting, and root plate and pit. A *Derived* box shows the deaths, uprooting rate and share, event volumes and expected tree-throw diffusivity implied by the current settings.
+* **Hillslope**: geometry, run length and seed, soil and bedrock. A *Run size* box estimates the run time.
+* **Processes**: creep, tree-throw mechanics, pit-mound collapse and root cycling.
+* **Disturbance**: fire or windstorm regime, with presets.
+* **Output**: animation frames, pixel scale, CRT scanlines and results folder.
+
+Hover over any field for an explanation. Use File → Load/Save species JSON for custom species. **Run** starts the simulation in the background with a progress bar, and **Stop** ends it early and keeps what has been simulated.
+
+**Right: results.**
+
+* **Retro view**: a 320 × 200, 16-colour EGA pixel animation of the run. Play, pause, step or scrub through it, change speed, pixel scale and scanlines, and export a GIF or a PNG frame.
+* **Results**: the eight-panel scientific figure.
+* **Summary**: key numbers from the run.
+* **Log**: messages.
+
+**What the retro view shows.** Everything comes from the simulation:
+
+* **Side view**: the hillslope transect through the middle of the plot, with soil (brown) over bedrock (grey). Pit-mound relief and soil are vertically exaggerated by the factor shown. The trees are the simulated stand at their simulated sizes, with far trees drawn darker. An uprooting appears as a toppling log and upturned root wad, falling the way the tree fell.
+* **Fire**: a red sky, burning snags, then snags toppling over the following years.
+* **Windstorm**: rain and lightning, "TIMBER!", and a burst of uprootings.
+* **Plan view**: pit-mound relief from blue pits to yellow mounds, tree canopies, snags, and new uprootings flashing with a line along their fall direction.
+* **HUD**: live trees, snags and uprootings; uprooting rate; mean soil depth; sediment yield; tree-throw share of the downslope flux; and a roughness graph.
+
+Frames are spaced evenly over the run. Extra frames are always captured at each fire or storm and in the decades after it.
+
+![Example animation](docs/tree_throw_retro_spruce.gif)
+
 ## Processes
 
 | Process | Formulation |

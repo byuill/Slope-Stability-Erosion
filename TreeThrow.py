@@ -1118,7 +1118,9 @@ class TreeThrowModel:
         self.record.snapshot_profiles.append(self.z.mean(axis=1))
         self.record.snapshot_soil.append(self.h.mean(axis=1))
 
-    def run(self, years: Optional[float] = None, progress: bool = True) -> RunRecord:
+    def run(self, years: Optional[float] = None, progress: bool = True, callback=None) -> RunRecord:
+        """Run the model.  `callback(model)` is called after every step; if it returns
+        False the run stops early (used by the GUI for progress, frames and cancelling)."""
         years = self.cfg.years if years is None else years
         nsteps = int(math.ceil(years / self.cfg.dt))
         snap_every = max(nsteps // max(self.cfg.n_snapshots - 1, 1), 1)
@@ -1137,6 +1139,11 @@ class TreeThrowModel:
             if progress and (k % max(nsteps // 20, 1) == 0 or k == nsteps):
                 print(f"\r  [{self.sp.key:>9}] {self.time:8.0f} / {years:.0f} yr  "
                       f"events={self.n_events:6d}", end="", flush=True)
+            if callback is not None and callback(self) is False:
+                if not self.record.time or self.record.time[-1] != self.time:
+                    self._record(events)
+                self._snapshot()
+                break
         if progress:
             print()
         return self.record
@@ -1233,11 +1240,19 @@ def hillshade(z: np.ndarray, dx: float, azimuth: float = 315.0, altitude: float 
 
 def plot_run(model: TreeThrowModel, path: Path) -> None:
     plt = _import_pyplot()
+    fig = plt.figure(figsize=(15, 9.5))
+    draw_run_figure(model, fig)
+    fig.savefig(path, dpi=130, bbox_inches="tight")
+    plt.close(fig)
+
+
+def draw_run_figure(model: TreeThrowModel, fig) -> None:
+    """Draw the eight-panel results figure onto an existing matplotlib Figure."""
+    import matplotlib
     rec, dx = model.record, model.cfg.dx
     t = np.array(rec.time)
     ext = [0, model.W, model.x[-1] + 0.5 * dx, 0]  # y across, x downslope (ridge at top)
 
-    fig = plt.figure(figsize=(15, 9.5))
     gs = fig.add_gridspec(2, 4, hspace=0.35, wspace=0.35)
     fig.suptitle(f"Tree-throw hillslope evolution — {model.sp.name}\n"
                  f"L = {model.L_active:.0f} m, W = {model.W:.0f} m, S0 = {model.cfg.slope:.2f}, "
@@ -1279,7 +1294,7 @@ def plot_run(model: TreeThrowModel, path: Path) -> None:
         ax.axis("off")
 
     ax = fig.add_subplot(gs[1, 0])
-    cmap = plt.get_cmap("viridis")
+    cmap = matplotlib.colormaps["viridis"]
     nsnap = len(rec.snapshot_times)
     for k, (ts, prof) in enumerate(zip(rec.snapshot_times, rec.snapshot_profiles)):
         ax.plot(model.x, prof, color=cmap(k / max(nsnap - 1, 1)), label=f"{ts:.0f} yr")
@@ -1314,8 +1329,6 @@ def plot_run(model: TreeThrowModel, path: Path) -> None:
         ax2 = ax.twinx()
         ax2.plot(t, rec.mean_soil, color="tab:orange", label="mean soil depth")
         ax2.set_ylabel("mean soil depth (m)", color="tab:orange")
-    fig.savefig(path, dpi=130, bbox_inches="tight")
-    plt.close(fig)
 
 
 def plot_comparison(models: List[TreeThrowModel], path: Path) -> None:
