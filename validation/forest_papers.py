@@ -427,16 +427,16 @@ def plot(res, path):
     S = res["S_samonil"]
     labels = ["uprootings\n(/ha/yr)", "share of\ndeaths", "mortality\n(%/yr)", "root-plate soil\n(m³/ha/yr)"]
     x = np.arange(len(labels))
-    for i, (key, c) in enumerate((("deciduous", "tab:orange"), ("spruce", "tab:blue"))):
+    for i, (key, c) in enumerate((("deciduous", "tab:orange"), ("spruce", "tab:blue"), ("oak", "tab:brown"))):
         r = S[key]
         model = [r["rate"], r["share"], 100 * r["mortality_per_stem"], r["volume_flux"]]
         lo = [r["rate_obs"][0], r["share_obs"][0], 100 * r["mortality_obs"][0], r["volume_flux_obs"][0]]
         hi = [r["rate_obs"][1], r["share_obs"][1], 100 * r["mortality_obs"][1], r["volume_flux_obs"][1]]
-        a.bar(x + (i - 0.5) * 0.38, model, 0.36, color=c, label=f"model {key}")
-        a.vlines(x + (i - 0.5) * 0.38, lo, hi, color="k", lw=4, alpha=0.5)
+        a.bar(x + (i - 1) * 0.27, model, 0.25, color=c, label=f"model {key}")
+        a.vlines(x + (i - 1) * 0.27, lo, hi, color="k", lw=4, alpha=0.5)
     a.set_xticks(x, labels, fontsize=8)
     a.set_yscale("log")
-    a.set(title="Šamonil 2017: bars = model, black = reserve range\n(deciduous vs. lowland/highland, spruce vs. mountain)")
+    a.set(title="Šamonil 2017: bars = model, black = reserve range\n(deciduous vs. lowland/highland, spruce vs. mountain, oak vs. Ranšpurk)")
     a.legend(fontsize=8)
 
     a = ax[0, 1]
@@ -552,7 +552,7 @@ def scorecard_rows(res):
         f"| H1 root-cycle flux formula reproduces Hoffman & Anderson | 4 published values | "
         f"{H['checks']['q_zA1_beta0.98'] * 1e4:.2f}×10⁻⁴ at β 0.98 … | {H['verdict_formula']} |",
         f"| H2 ponderosa_pine: tree throw no larger than root cycling (Front Range) | D_tt / D_root ≤ 1 | "
-        f"{H['ponderosa_tt_over_root']:.2f} | {H['verdict_ponderosa_root_dominated']} |",
+        f"{H['ponderosa_tt_over_root']:.2g} | {H['verdict_ponderosa_root_dominated']} |",
         f"| HF1 pit-to-mound relief, median, couplets < 150 yr old | 50 cm (Harvard Forest, n = {HARVARD['n']}) | "
         f"{HF['median_young_cm']:.0f} cm | {HF['verdict_median_young']} |",
         f"| HF2 pit-to-mound relief, median, all couplets > 5 cm (steady state) | 50 cm | {HF['median_cm']:.0f} cm | "
@@ -616,7 +616,7 @@ def detail_lines(res):
                f"median-depth formula {ch['full_over_median']:.2f} (≈ 40 % larger). Root-cycle diffusivity at β 0.95: "
                + ", ".join(f"A horizon {k} m {v:.1e}" for k, v in H["D_root"].items()) +
                f" m²/yr. The ponderosa_pine preset (open Front Range woodland, deep taproot) has a tree-throw "
-               f"diffusivity of {H['D_tt_ponderosa']:.1e} m²/yr, {H['ponderosa_tt_over_root']:.2f}× root cycling. "
+               f"diffusivity of {H['D_tt_ponderosa']:.1e} m²/yr, {H['ponderosa_tt_over_root']:.2g}× root cycling. "
                f"Model deciduous tree-throw diffusivity {H['D_tt_deciduous']:.1e} m²/yr is "
                f"{H['tt_over_root_all_roots']:.2f}× the all-roots root-cycle value (Gabet et al. 2003, via Hoffman: "
                "tree throw ≈ 4× root cycling). Root cycling is an optional model process (`root_cycle`), off by "

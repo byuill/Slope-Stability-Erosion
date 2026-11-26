@@ -12,7 +12,7 @@
 
 | Check | Method | Result |
 |---|---|---|
-| Global volume budget | For 12 configurations, Δ(surface volume) is compared with bedrock-to-soil dilation gain − channel export + clipping correction. The configurations cover the four species, fire, storms, nonlinear creep on a steep slope, base-level fall with wind, thin soil, root cycling, no soil model, a narrow plot and dt = 5 yr. | Closes to ≤ 4×10⁻¹² m³ in every case. |
+| Global volume budget | For 17 configurations, Δ(surface volume) is compared with bedrock-to-soil dilation gain − channel export + clipping correction. The configurations cover the four generic species, fire, storms, nonlinear creep on a steep slope, base-level fall with wind, thin soil, root cycling, no soil model, a narrow plot and dt = 5 yr, plus the keystone presets: oak snag falls, a lodgepole fire, hemlock outbreaks, Douglas-fir storms and ponderosa on thin soil. | Closes to ≤ 4×10⁻¹² m³ in every case. |
 | Soil positivity | Soil volume added by clipping negative soil to zero. | Before: up to 11 % of the budget (1.34 of 12 m³ on a 3 m wide plot); 0.24 m³ on a steep nonlinear slope. **After: zero** (≤ 10⁻¹⁹ m³ round-off). |
 | Pit geometry | Single-event pit volume and soil displacement vs. analytic values at dx = 0.1–1 m. | Volume exact at every dx; displacement within 0.06 m of analytic. |
 | Grid convergence | dx = 0.125, 0.25, 0.5 m; deciduous, 3 seeds. | Tree-throw D, flux share, roughness and event volume agree to ≤ 1 %. |
