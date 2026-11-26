@@ -25,10 +25,10 @@ Requires `numpy` and `matplotlib` (`scipy` is optional). Runs headless (Agg back
 | Stand dynamics | Every tree has a position, an age, a lifespan drawn from N(mean, sd), and a mature root-plate diameter and depth drawn from lognormals with negative correlation (`size_depth_correlation`; wide plates are shallow, Zadrożny et al. 2017). Diameter grows as `1 - exp(-3 age / maturity_age)`; depth grows three times faster. Dead trees are replaced after an exponential regeneration delay, so stand density stays constant. |
 | Uprooting | A fraction `uproot_fraction` of deaths uproot. The rest snap or die standing and move no soil. |
 | Fall direction | von Mises. Its mean vector is `fall_slope_bias * (local gradient over ~2R)` plus an optional wind vector (`--wind-dir`, `--wind-kappa`). |
-| Pit | Elliptical paraboloid of equivalent radius R and depth H, `pit_aspect` (default 1.5) times wider across the fall line than along it. It is limited by soil thickness, and a fraction (`bedrock_pluck_fraction`) of root penetration below the soil plucks bedrock. That rock becomes soil, dilated by `rho_r/rho_s`. |
-| Mound | The root plate rotates about a hinge at the pit edge. Soil is deposited as an elliptical mound as long as the pit, centred `a + H/3` from the stump along the fall line (a = semi-axis along the fall line). |
+| Pit | Flat-floored bowl with depth profile `H (1 − ρⁿ)` (`pit_shape_exponent`, default n = 4, which has the volume of a half-ellipsoid; n = 2 is a paraboloid), equivalent radius R, `pit_aspect` (default 1.5) times wider across the fall line than along it. It is limited by soil thickness, and a fraction (`bedrock_pluck_fraction`) of root penetration below the soil plucks bedrock. That rock becomes soil, dilated by `rho_r/rho_s`. |
+| Mound | The root plate rotates about a hinge at the pit edge. Soil is deposited as an elliptical mound as long as the pit, centred `a + c(n) H` from the stump along the fall line (a = semi-axis along the fall line; c = depth of the excavated soil's centroid, 0.4 H for n = 4). |
 | Infill | A fraction of root-plate soil falls back into the pit: `f0 (1 - S_fall / S_crit)`, clipped to 0–0.95. `S_fall` is the ground gradient along the fall direction, `f0 = 0.3` (`--infill`) and `S_crit = tan 47°` (Norman et al. 1995, secondary). Downslope falls shed more soil away from the pit, so displaced volume grows with slope. |
-| Pit-mound collapse | Pit, mound and a 0.5 m margin are marked as fresh soil. This soil diffuses with an extra `D_f exp(-age/τ)`, D_f = 0.15 m²/yr and τ = 3 yr (`--fresh-diffusivity`, `--fresh-decay-time`), calibrated to the 1–5 yr spruce chronosequence of Zadrożny et al. (2017). The collapse acts on relief relative to the surrounding surface, inside a window with no-flux borders, so it conserves volume. |
+| Pit-mound collapse | Pit, mound and a 0.5 m margin are marked as fresh soil. This soil diffuses with an extra `D_f exp(-age/τ)`, D_f = 0.20 m²/yr and τ = 3 yr (`--fresh-diffusivity`, `--fresh-decay-time`), calibrated to the 1–5 yr spruce chronosequence of Zadrożny et al. (2017). The collapse acts on relief relative to the surrounding surface, inside a window with no-flux borders, so it conserves volume. |
 | Soil production | `P = P0 exp(-h/h0)` |
 | Boundaries | Ridge (x = 0): no flux; soil thrown over the divide is mirrored back (symmetric divide). Channel (x = L): fixed or lowering elevation, removes all sediment delivered to it. Lateral boundaries are periodic. |
 
@@ -39,17 +39,17 @@ Requires `numpy` and `matplotlib` (`scipy` is optional). Runs headless (Agg back
 | Mean lifespan (yr) | 200 ± 60 | 250 ± 75 | 90 ± 25 | 220 ± 60 |
 | Stand density (stems/ha) | 350 | 220 | 1100 | 500 |
 | Uprooting share of mortality | 0.35 | 0.55 | 0.30 | 0.60 |
-| Mature root-plate diameter (m) | 2.4 | 3.5 | 1.5 | 3.6 |
+| Mature root-plate diameter (m) | 2.4 | 3.0 | 1.5 | 3.3 |
 | Mature root-plate depth (m) | 1.0 | 0.75 | 0.5 | 1.4* |
 | Pit width / length | 1.5 | 1.5 | 1.5 | 1.54 |
 | Size–depth correlation | −0.6 | −0.6 | −0.6 | −0.8 |
 | Maturity age (yr) | 80 | 100 | 40 | 70 |
 | Regeneration delay (yr) | 10 | 5 | 2 | 10 |
 | → Uprootings (/ha/yr) | 0.58 | 0.47 | 3.59 | 1.30 |
-| → Mean displaced volume (m³) | 1.6 | 2.6 | 0.31 | 5.0 |
-| → Expected tree-throw D at S = 0.35, uprooting only (m²/yr) | 1.4e-4 | 2.5e-4 | 1.0e-4 | 1.4e-3 |
+| → Mean displaced volume (m³) | 2.1 | 2.5 | 0.42 | 5.6 |
+| → Expected tree-throw D at S = 0.35, uprooting only (m²/yr) | 2.0e-4 | 2.2e-4 | 1.4e-4 | 1.6e-3 |
 
-\*Fresh depth. The model's paraboloid pit collapses to the observed 0.95 m depth within a year.
+\*Root-plate thickness. About 17 % of the soil falls straight back on a 25° slope, leaving a 1.16 m open pit. Collapse brings it to the observed 0.95 m within a year.
 
 * **Spruce** is calibrated to 75 uprooted Norway spruce in Babia Góra (Zadrożny et al. 2017). Its pit depth, volume, shape and 1–5 yr degradation, and its size–depth correlation, come from that study.
 * **Deciduous** root-plate size is set so displaced volume (2.5 m³) matches published beech and old-growth values (2.4–2.8 m³). Its uprooting share gives an 11–18 % tree-throw share of hillslope flux, as Doane et al. (2021) measured for southern-Indiana hardwoods.

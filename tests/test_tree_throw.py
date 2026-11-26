@@ -64,12 +64,14 @@ class UprootTests(unittest.TestCase):
         z0 = m.z.copy()
         R, H = 1.2, 0.8
         ev = m.uproot(10.0, 5.0, R, H, 0.0)
-        self.assertAlmostEqual(ev["volume"], 0.5 * math.pi * R * R * H, places=10)
+        self.assertAlmostEqual(ev["volume"], tt.pit_volume_factor(m.sp.pit_shape_exponent) * math.pi * R * R * H,
+                               places=10)
         self.assertAlmostEqual(np.sum(m.z - z0) * m.cell_area, 0.0, places=10)
         self.assertEqual(ev["export"], 0.0)
         # Soil centroid moves about a + H/3 downslope, a = semi-axis along the fall line.
         a = R / math.sqrt(m.sp.pit_aspect)
-        self.assertAlmostEqual(ev["moment"] / ev["volume"], a + H / 3, delta=0.1)
+        c = tt.pit_centroid_depth_fraction(m.sp.pit_shape_exponent)
+        self.assertAlmostEqual(ev["moment"] / ev["volume"], a + c * H, delta=0.1)
         self.assertLess(m.z[int(10.0 / m.cfg.dx), int(5.0 / m.cfg.dx)], z0[int(10.0 / m.cfg.dx), int(5.0 / m.cfg.dx)])
 
     def test_infill_reduces_transport(self):
@@ -85,11 +87,43 @@ class UprootTests(unittest.TestCase):
         self.assertGreater(down["displaced"], up["displaced"])
         self.assertAlmostEqual(float(tt.infill_at_slope(0.3, 1.07, 1.07)), 0.0)
 
+    def test_pit_shape_factors(self):
+        # Numerical integration of H (1 - rho^n) over a unit disc.
+        rho = np.linspace(0, 1, 200001)
+        for n in (2.0, 4.0, 7.0):
+            d = 1 - rho ** n
+            vol = np.trapezoid(d * 2 * np.pi * rho, rho)
+            self.assertAlmostEqual(vol / np.pi, tt.pit_volume_factor(n), places=6)
+            cen = np.trapezoid(0.5 * d * d * 2 * np.pi * rho, rho) / vol
+            self.assertAlmostEqual(cen, tt.pit_centroid_depth_fraction(n), places=6)
+        self.assertAlmostEqual(tt.pit_volume_factor(2), 0.5)
+        self.assertAlmostEqual(tt.pit_centroid_depth_fraction(2), 1 / 3)
+
+    def test_flat_floored_pit(self):
+        """A larger exponent keeps the pit floor near full depth further from the centre."""
+        depths = {}
+        for n in (2.0, 6.0):
+            sp = tt.replace(tt.SPECIES["pine"], pit_aspect=1.0, pit_shape_exponent=n)
+            cfg = tt.HillslopeConfig(length=20.0, width=10.0, slope=0.0, dx=0.1, years=1, soil_model=False,
+                                     infill_fraction=0.0, fresh_diffusivity=0.0, seed=1)
+            m = tt.TreeThrowModel(sp, cfg)
+            z0 = m.z.copy()
+            m.uproot(10.0, 5.0, 1.5, 0.8, 0.0)
+            pit = -(m.z - z0)[:, 50]
+            i0 = int(np.argmax(pit))
+            depths[n] = pit[i0 - 7] / pit[i0]          # toward the upslope rim (mound lies downslope)
+            dist = abs((i0 - 7 + 0.5) * 0.1 - 10.0) / 1.5
+            centre = 1 - (abs((i0 + 0.5) * 0.1 - 10.0) / 1.5) ** n
+            self.assertAlmostEqual(depths[n], (1 - dist ** n) / centre, delta=0.02)
+        self.assertLess(depths[2.0], 0.8)
+        self.assertGreater(depths[6.0], 0.95)
+
     def test_elliptical_pit_volume_and_shape(self):
         m = model(soil_model=False, infill_fraction=0.0, fresh_diffusivity=0.0)
         z0 = m.z.copy()
         ev = m.uproot(10.0, 5.0, 1.2, 0.8, 0.0)
-        self.assertAlmostEqual(ev["volume"], 0.5 * math.pi * 1.2 ** 2 * 0.8, places=10)
+        self.assertAlmostEqual(ev["volume"], tt.pit_volume_factor(m.sp.pit_shape_exponent) * math.pi * 1.2 ** 2 * 0.8,
+                               places=10)
         pit = (m.z - z0) < -0.05
         rows, cols = np.nonzero(pit)
         along = (rows.max() - rows.min() + 1) * m.cfg.dx

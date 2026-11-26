@@ -59,6 +59,7 @@ ZADROZNY = {
             "slope steepness on RDA axis 1.",
 }
 SITE_SLOPE_DEG = 25.0   # mid-point of the 10-40° range
+EDGE_THRESHOLD_M = 0.10  # pit edge: >= 10 cm below the pre-uproot surface (~1/10 of the 1-yr pit depth)
 
 
 def _verdict(ok, partial=False):
@@ -84,7 +85,9 @@ def single_event_series(key, years=10, slope_deg=SITE_SLOPE_DEG, dx=0.25, R=None
 
     Returns a dict of per-year lists: time, pit depth, mound height, pit volume,
     pit length (along the fall line) and pit width (across it), measured relative
-    to an identical hillslope without the event.  Pit extent uses a 5 cm threshold.
+    to an identical hillslope without the event.  Pit length and width are the
+    extent of ground at least EDGE_THRESHOLD_M below the pre-uproot surface (and,
+    for comparison, 5 cm below it).
     """
     sp = tt.SPECIES[key]
     R = 0.5 * sp.root_plate_diameter if R is None else R
@@ -95,19 +98,20 @@ def single_event_series(key, years=10, slope_deg=SITE_SLOPE_DEG, dx=0.25, R=None
     ref = tt.TreeThrowModel(sp, tt.HillslopeConfig(**cfg))
     m = tt.TreeThrowModel(sp, tt.HillslopeConfig(**cfg))
     m.uproot(6.0, 6.0, R, H, 0.0)
-    out = {k: [] for k in ("t", "depth", "mound", "pit_volume", "mound_volume", "pit_length", "pit_width")}
+    out = {k: [] for k in ("t", "depth", "mound", "pit_volume", "mound_volume", "pit_length", "pit_width",
+                           "pit_length_5cm", "pit_width_5cm")}
 
     def record(t):
         rel = m.z - ref.z
-        pit = rel < -0.05
-        rows, cols = np.nonzero(pit)
+        for suffix, thr in (("", EDGE_THRESHOLD_M), ("_5cm", 0.05)):
+            rows, cols = np.nonzero(rel < -thr)
+            out["pit_length" + suffix].append(float((rows.max() - rows.min() + 1) * dx) if rows.size else 0.0)
+            out["pit_width" + suffix].append(float((cols.max() - cols.min() + 1) * dx) if cols.size else 0.0)
         out["t"].append(t)
         out["depth"].append(float(-rel.min()))
         out["mound"].append(float(rel.max()))
         out["pit_volume"].append(float(-rel[rel < 0].sum() * m.cell_area))
         out["mound_volume"].append(float(rel[rel > 0].sum() * m.cell_area))
-        out["pit_length"].append(float((rows.max() - rows.min() + 1) * dx) if rows.size else 0.0)
-        out["pit_width"].append(float((cols.max() - cols.min() + 1) * dx) if cols.size else 0.0)
 
     record(0)
     for t in range(1, years + 1):
@@ -131,7 +135,8 @@ def test_geometry():
         s = single_event_series(key, years=1)
         r = {"fresh_depth_m": s["depth"][0], "fresh_pit_volume_m3": s["pit_volume"][0],
              "depth_1yr_m": s["depth"][1], "pit_volume_1yr_m3": s["pit_volume"][1],
-             "length_1yr_m": s["pit_length"][1], "width_1yr_m": s["pit_width"][1]}
+             "length_1yr_m": s["pit_length"][1], "width_1yr_m": s["pit_width"][1],
+             "length_1yr_5cm_m": s["pit_length_5cm"][1], "width_1yr_5cm_m": s["pit_width_5cm"][1]}
         r["width_to_length_1yr"] = r["width_1yr_m"] / r["length_1yr_m"]
         r["verdict_depth"] = _verdict(abs(r["depth_1yr_m"] - D[0]) <= 2 * D[1])
         r["verdict_volume"] = _verdict(vmin <= r["pit_volume_1yr_m3"] <= vmax,
@@ -306,16 +311,19 @@ def detail_lines(res):
         L.append(f"| {k.replace('_', ' ')} | " + " | ".join(f"{m:.2f} ± {s:.2f}" for m, s in v) + " |")
     L.append("")
     L.append("**Z1 — pit one year after uprooting** (single mature tree falling downslope on a 25° slope). "
+             f"Pit length and width are the extent of ground at least {EDGE_THRESHOLD_M * 100:.0f} cm below the "
+             "pre-uproot surface; values for a 5 cm edge are given in brackets. "
              f"Observed pit volume implied by Table 1: {o['implied_pit_volume_m3'][0]:.1f}–"
              f"{o['implied_pit_volume_m3'][1]:.1f} m³ (our paraboloid-to-half-ellipsoid conversion).\n")
-    L.append("| model | fresh depth (m) | depth 1 yr (m) | length 1 yr (m) | width 1 yr (m) | width/length | pit volume 1 yr (m³) |")
+    L.append("| model | fresh open pit depth (m) | depth 1 yr (m) | length 1 yr (m) | width 1 yr (m) | width/length | pit volume 1 yr (m³) |")
     L.append("|---|---|---|---|---|---|---|")
     L.append(f"| observed spruce | — | {o['pit_depth_m'][0]:.2f} | {o['pit_length_m'][0]:.2f} | {o['pit_width_m'][0]:.2f} | "
              f"{o['width_to_length']:.2f} | {o['implied_pit_volume_m3'][0]:.1f}–{o['implied_pit_volume_m3'][1]:.1f} |")
     for k in ("spruce", "pine", "deciduous"):
         r = g[k]
-        L.append(f"| {k} | {r['fresh_depth_m']:.2f} | {r['depth_1yr_m']:.2f} | {r['length_1yr_m']:.2f} | "
-                 f"{r['width_1yr_m']:.2f} | {r['width_to_length_1yr']:.2f} | {r['pit_volume_1yr_m3']:.2f} |")
+        L.append(f"| {k} | {r['fresh_depth_m']:.2f} | {r['depth_1yr_m']:.2f} | {r['length_1yr_m']:.2f} "
+                 f"({r['length_1yr_5cm_m']:.2f}) | {r['width_1yr_m']:.2f} ({r['width_1yr_5cm_m']:.2f}) | "
+                 f"{r['width_to_length_1yr']:.2f} | {r['pit_volume_1yr_m3']:.2f} |")
     L.append("")
     L.append(f"**Z2 — size–depth relation.** Zadrożny Fig. 3: pit depth = −0.3758 × root-plate height + 2.049 "
              f"(R² = 0.64, r = {z2['r_observed']:.2f}). Model correlation of plate diameter and depth at death: "
@@ -330,6 +338,13 @@ def detail_lines(res):
     for lab, rows in z4["comparison"].items():
         for r in rows:
             L.append(f"| {lab} | {r['age_yr']} | {r['observed']:.2f} ± {r['se']:.2f} | {r['model']:.2f} | {r['z']:+.1f} |")
+    ln, wd = z4["comparison"]["pit length"], z4["comparison"]["pit width"]
+    L.append(f"\nPit size through time: observed length {ln[0]['observed']:.2f} → {ln[2]['observed']:.2f} m and width "
+             f"{wd[0]['observed']:.2f} → {wd[2]['observed']:.2f} m from 1 to 5 yr (pits narrow); model "
+             f"{ln[0]['model']:.2f} → {ln[2]['model']:.2f} m and {wd[0]['model']:.2f} → {wd[2]['model']:.2f} m. "
+             "Diffusive collapse lowers the rim and widens the depression, whereas the surveyed pits narrow (rim "
+             "slumping and litter infill at the edges, or partly the chronosequence: the 1-yr cohort also has taller "
+             "root plates). This is a structural limitation of the diffusive collapse.\n")
     L.append(f"\nPit depth at 5 yr / 1 yr: observed {z4['observed_depth_ratio_5_to_1']:.2f}, model "
              f"{z4['model_depth_ratio_5_to_1']:.2f}, model without fresh collapse "
              f"{z4['no_collapse_depth_ratio_5_to_1']:.2f}.\n")

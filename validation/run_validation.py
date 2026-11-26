@@ -489,9 +489,12 @@ def fmt(x, p=2):
 
 def _get(d, *path):
     for k in path:
-        if not isinstance(d, dict) or k not in d:
+        if isinstance(d, list) and isinstance(k, int) and k < len(d):
+            d = d[k]
+        elif isinstance(d, dict) and k in d:
+            d = d[k]
+        else:
             return None
-        d = d[k]
     return d
 
 
@@ -510,40 +513,65 @@ BASELINE_METRICS = [
     ("V6 fresh mound half-height time (yr)", ("V6_mound_persistence", "runs", "D=0.001", "time_to_half_height_yr"),
      "{:.0f}", "≈ 2–3 (Zadrożny mound 0.71→0.42 m in 2 yr)"),
     ("Z2 size–depth correlation, pine", ("Z_zadrozny_2017", "Z2_size_depth", "pine", "r_model"), "{:+.2f}", "−0.80"),
+    ("Spruce fresh open-pit depth (m)", ("Z_zadrozny_2017", "Z1_geometry", "spruce", "fresh_depth_m"), "{:.2f}",
+     "≥ 0.95 (1-yr depth)"),
+    ("Spruce pit depth at 1 yr (m)", ("Z_zadrozny_2017", "Z1_geometry", "spruce", "depth_1yr_m"), "{:.2f}", "0.95 ± 0.09"),
+    ("Topographic variance, deciduous, S = 0.35 (m²)", ("D_doane_2021", "D2_variance", "species_at_S0.35", "deciduous",
+                                                        "variance_mean"), "{:.4f}", "0.001–0.03"),
+    ("Couplet mound height at 7 yr, deciduous (m)", ("D_doane_2021", "D4_couplet", "model_mound_height_m", 1),
+     "{:.2f}", "≈ 0.43 (derived)"),
 ]
 
 
+BASELINES = [("original model", "baseline_results.json"), ("paraboloid pits", "previous_results.json")]
+
+
 def baseline_comparison(R):
-    path = OUT / "baseline_results.json"
-    if not path.exists():
+    bases = [(name, json.loads((OUT / f).read_text(encoding="utf-8"))["results"])
+             for name, f in BASELINES if (OUT / f).exists()]
+    if not bases:
         return []
-    base = json.loads(path.read_text(encoding="utf-8"))["results"]
-    L = ["## Change from the previous model\n",
-         "Baseline: the model and suite before the root-plate, infill and pit-mound-collapse changes "
-         "(`baseline_results.json`). Pit depth after 3 / 5 yr is shown relative to the 1-yr pit.\n",
-         "| metric | literature | previous model | updated model |", "|---|---|---|---|"]
+    L = ["## Change from previous model versions\n",
+         "*original model*: before the root-plate, infill and pit-mound-collapse changes; *paraboloid pits*: with "
+         "those changes but paraboloid pits (D_f = 0.15 m²/yr); *updated*: flat-floored pits (n = 4), "
+         "D_f = 0.20 m²/yr. Pit depth after 3 / 5 yr is shown relative to the 1-yr pit.\n",
+         "| metric | literature | " + " | ".join(n for n, _ in bases) + " | updated |",
+         "|---|---|" + "---|" * len(bases) + "---|"]
 
     def f(v, fmt):
         if v is None:
             return "—"
         return f"{100 * v:.0f} %" if fmt == "pct" else fmt.format(v)
 
-    for label, p, fmt, lit in BASELINE_METRICS:
-        L.append(f"| {label} | {lit} | {f(_get(base, *p), fmt)} | {f(_get(R, *p), fmt)} |")
     def persistence(runs):
+        if runs.get("persistence_50cm_to_5cm_yr") is not None:
+            return runs["persistence_50cm_to_5cm_yr"]
         h = np.array(_get(runs, "runs", "D=0.001", "history") or [])
         if not len(h):
             return None
         t50 = h[np.argmax(h[:, 1] <= 0.5), 0] if (h[:, 1] <= 0.5).any() else None
         t5 = h[np.argmax(h[:, 1] <= 0.05), 0] if (h[:, 1] <= 0.05).any() else None
         return (t5 - t50) if (t5 is not None and t50 is not None) else None
-    pb, pn = persistence(base.get("V6_mound_persistence", {})), R["V6_mound_persistence"]["persistence_50cm_to_5cm_yr"]
-    L.append(f"| V6 persistence of a 50 cm mound to < 5 cm (yr) | 200–250 | {f(pb, '{:.0f}')} | {f(pn, '{:.0f}')} |")
-    old = _get(base, "Z_zadrozny_2017", "Z4_degradation", "pred_default_D", "pit")
-    new = R["Z_zadrozny_2017"]["Z4_degradation"]["comparison"]["pit depth"]
-    if old:
-        L.append(f"| Z4 spruce pit depth at 3 / 5 yr, relative to 1 yr | 0.68 / 0.55 | {old[0]:.2f} / {old[1]:.2f} | "
-                 f"{new[1]['model'] / new[0]['model']:.2f} / {new[2]['model'] / new[0]['model']:.2f} |")
+
+    def z4ratio(res):
+        c = _get(res, "Z_zadrozny_2017", "Z4_degradation", "comparison", "pit depth")
+        if c:
+            return c[1]["model"] / c[0]["model"], c[2]["model"] / c[0]["model"]
+        old = _get(res, "Z_zadrozny_2017", "Z4_degradation", "pred_default_D", "pit")
+        return tuple(old) if old else None
+
+    for label, p, fmt, lit in BASELINE_METRICS:
+        L.append(f"| {label} | {lit} | " + " | ".join(f(_get(b, *p), fmt) for _, b in bases)
+                 + f" | {f(_get(R, *p), fmt)} |")
+    L.append("| V6 persistence of a 50 cm mound to < 5 cm (yr) | 200–250 | "
+             + " | ".join(f(persistence(b.get("V6_mound_persistence", {})), "{:.0f}") for _, b in bases)
+             + f" | {f(persistence(R['V6_mound_persistence']), '{:.0f}')} |")
+
+    def zr(res):
+        r = z4ratio(res)
+        return f"{r[0]:.2f} / {r[1]:.2f}" if r else "—"
+    L.append("| Z4 spruce pit depth at 3 / 5 yr, relative to 1 yr | 0.68 / 0.55 | "
+             + " | ".join(zr(b) for _, b in bases) + f" | {zr(R)} |")
     L.append("")
     return L
 

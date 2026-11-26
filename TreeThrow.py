@@ -26,14 +26,15 @@ hillslope (ridge -> channel) in which soil is moved by two processes:
      * chooses a fall azimuth from a von Mises distribution whose mean and
        concentration combine a downslope bias (proportional to local gradient)
        and an optional prevailing wind,
-     * excavates an elliptical paraboloid PIT at the stump, wider across the
-       fall line than along it (pit_aspect), of equivalent radius R and depth
-       H; wide plates are shallow (negative size-depth correlation).  The pit
+     * excavates a flat-floored, bowl-shaped PIT at the stump, depth profile
+       H (1 - rho^n) with n = 4 by default (the volume of a half-ellipsoid),
+       wider across the fall line than along it (pit_aspect), of equivalent
+       radius R; wide plates are shallow (negative size-depth correlation).  The pit
        is limited by soil thickness; a fraction of any root penetration below
        the soil-bedrock interface plucks bedrock -> biotic soil production,
      * rotates the root plate about a hinge at the pit edge, so the root-wad
-       soil centroid moves ~ a + H/3 in the fall direction (a = semi-axis along
-       the fall line), and deposits it as an elliptical MOUND beyond the
+       soil centroid moves ~ a + c(n) H in the fall direction (a = semi-axis
+       along the fall line, c = centroid depth fraction, 0.4 for n = 4), and deposits it as an elliptical MOUND beyond the
        hinge.  A fraction of the soil falls back into the pit; it shrinks for
        falls toward lower ground and grows for falls uphill (Norman et al. 1995),
      * marks the pit, mound and a margin as FRESH SOIL, which collapses with an
@@ -143,6 +144,7 @@ class TreeSpecies:
     fall_slope_bias: float = 2.0  # von Mises concentration per unit gradient (downslope lean)
     regeneration_delay: float = 5.0  # yr, mean delay before a gap is re-stocked
     pit_aspect: float = 1.5       # pit width across fall / length along fall (Zadrożny: 4.23/2.74)
+    pit_shape_exponent: float = 4.0  # pit depth profile H (1 - rho^n): 2 = paraboloid, larger = flatter floor
     size_depth_correlation: float = -0.6  # correlation of plate diameter and depth (log space)
 
     # ---- derived quantities ------------------------------------------------
@@ -153,9 +155,9 @@ class TreeSpecies:
 
     @property
     def mature_pit_volume(self) -> float:
-        """Volume (m^3) of a paraboloid pit of mature size."""
+        """Volume (m^3) of a pit of mature size."""
         r = 0.5 * self.root_plate_diameter
-        return 0.5 * math.pi * r * r * self.root_plate_depth
+        return pit_volume_factor(self.pit_shape_exponent) * math.pi * r * r * self.root_plate_depth
 
     def validate(self) -> None:
         checks = {
@@ -171,6 +173,7 @@ class TreeSpecies:
             "fall_slope_bias": self.fall_slope_bias >= 0,
             "regeneration_delay": self.regeneration_delay >= 0,
             "pit_aspect": self.pit_aspect > 0,
+            "pit_shape_exponent": self.pit_shape_exponent >= 1.0,
             "size_depth_correlation": -1.0 < self.size_depth_correlation < 1.0,
         }
         bad = [k for k, ok in checks.items() if not ok]
@@ -211,7 +214,7 @@ SPECIES: Dict[str, TreeSpecies] = {
         lifespan_mean=250.0, lifespan_sd=75.0,
         density=220.0,
         uproot_fraction=0.55,
-        root_plate_diameter=3.5, root_plate_diameter_cv=0.30,
+        root_plate_diameter=3.0, root_plate_diameter_cv=0.30,
         root_plate_depth=0.75, root_plate_depth_cv=0.30,
         maturity_age=100.0,
         dbh=50.0,
@@ -243,9 +246,10 @@ SPECIES: Dict[str, TreeSpecies] = {
         lifespan_mean=220.0, lifespan_sd=60.0,
         density=500.0,
         uproot_fraction=0.60,
-        # Fresh plate sized so that, after the first year of collapse, the model pit
-        # matches the 1-yr pits of Zadrożny et al. (0.95 m deep, ~5 m^3).
-        root_plate_diameter=3.6, root_plate_diameter_cv=0.20,
+        # Plate sized so that, after the soil that falls straight back (~17 % on a 25°
+        # slope) and the first year of collapse, the model pit matches the 1-yr pits
+        # of Zadrożny et al. (0.95 m deep, ~5 m^3): fresh open pit ~1.16 m deep.
+        root_plate_diameter=3.3, root_plate_diameter_cv=0.20,
         root_plate_depth=1.4, root_plate_depth_cv=0.25,
         maturity_age=70.0,
         dbh=33.0,
@@ -300,7 +304,7 @@ class HillslopeConfig:
     tree_throw: bool = True
     infill_fraction: float = 0.3       # fraction of root-wad soil falling back into the pit on flat ground
     infill_critical_slope: float = 1.07  # fall-line gradient (~47°) at which no soil falls back (Norman 1995)
-    fresh_diffusivity: float = 0.15    # m^2/yr, extra diffusivity of fresh pit-mound soil at t = 0 (fit to Zadrożny 2017)
+    fresh_diffusivity: float = 0.20    # m^2/yr, extra diffusivity of fresh pit-mound soil at t = 0 (fit to Zadrożny 2017)
     fresh_decay_time: float = 3.0      # yr, e-folding time of the fresh-soil diffusivity (fit to Zadrożny 2017)
     fresh_margin: float = 0.5          # m, disturbed zone extends this far beyond pit and mound
     wind_direction_deg: float = 0.0    # azimuth of prevailing fall direction (0 = downslope, 90 = +y)
@@ -361,6 +365,25 @@ def _bessel_ratio(kappa: float) -> float:
         return 1 - 1 / (2 * kappa) - 1 / (8 * kappa ** 2)
 
 
+def pit_volume_factor(n: float) -> float:
+    """Volume of a pit with depth profile H (1 - rho^n) over an ellipse, divided by pi a b H.
+
+    n = 2 is a paraboloid (1/2); n = 4 has the volume of a half-ellipsoid (2/3); n -> inf a flat-floored cylinder.
+    """
+    return n / (n + 2.0)
+
+
+def pit_centroid_depth_fraction(n: float) -> float:
+    """Depth of the excavated soil's centroid below the surface, as a fraction of H.
+
+    After the plate rotates about its hinge this depth becomes horizontal travel,
+    so the root-wad centroid moves a + c(n) H along the fall line (c = 1/3 for a paraboloid).
+    """
+    num = 0.5 - 2.0 / (n + 2.0) + 1.0 / (2.0 * n + 2.0)
+    den = n / (2.0 * (n + 2.0))
+    return 0.5 * num / den
+
+
 def growth_factor(age, maturity_age: float):
     """Fraction of mature root-plate size reached at a given age."""
     age = np.maximum(age, 0.0)
@@ -414,11 +437,15 @@ def draw_mature_sizes(rng: np.random.Generator, sp: TreeSpecies, n: int):
 
 def expected_tree_throw(sp: TreeSpecies, slope: float, infill_fraction: float = 0.3,
                         infill_critical_slope: float = 1.07,
-                        n_samples: int = 200_000, seed: int = 0) -> Dict[str, float]:
+                        n_samples: int = 200_000, seed: int = 0, soil_depth: Optional[float] = None,
+                        bedrock_pluck_fraction: float = 0.3, rock_to_soil_dilation: float = 2.0) -> Dict[str, float]:
     """Monte-Carlo expectation of tree-throw transport on an infinite planar slope.
 
-    Assumes unlimited soil depth and no wind bias, and covers the uprooting
-    event itself (not the later collapse of fresh pits and mounds).  Returns the
+    Assumes no wind bias and covers the uprooting event itself (not the later
+    collapse of fresh pits and mounds).  With `soil_depth`, pits are limited by a
+    uniform soil layer of that thickness, as in the model's soil option (roots
+    below it pluck a fraction of the bedrock, which dilates into soil);
+    otherwise soil is unlimited.  Returns the
     event rate, mean excavated and displaced volumes, mean displacement, mean
     downslope flux q (m^2/yr) and the equivalent linear diffusivity D_tt = q / S.
     """
@@ -426,13 +453,24 @@ def expected_tree_throw(sp: TreeSpecies, slope: float, infill_fraction: float = 
     life = draw_lifespans(rng, sp, n_samples)
     r_m, h_m = draw_mature_sizes(rng, sp, n_samples)
     r, h = plate_at_age(sp, r_m, h_m, life)
-    vol = 0.5 * np.pi * r * r * h
+    n = sp.pit_shape_exponent
+    if soil_depth is None:
+        vol = pit_volume_factor(n) * np.pi * r * r * h
+    else:
+        rho = (np.arange(32) + 0.5) / 32.0                 # radial midpoints over the unit ellipse
+        w = 2.0 * rho / 32.0                               # area weights (sum = 1)
+        vol = np.empty(n_samples)
+        for i0 in range(0, n_samples, 20000):
+            d = h[i0:i0 + 20000, None] * (1.0 - rho[None, :] ** n)
+            soil = np.minimum(d, soil_depth)
+            rock = bedrock_pluck_fraction * np.maximum(d - soil_depth, 0.0) * rock_to_soil_dilation
+            vol[i0:i0 + 20000] = np.pi * r[i0:i0 + 20000] ** 2 * ((soil + rock) @ w)
     a = r / math.sqrt(sp.pit_aspect)                    # semi-axis along the fall line
     kappa = sp.fall_slope_bias * slope
     phi = rng.vonmises(0.0, kappa, n_samples) if kappa > 0 else rng.uniform(-np.pi, np.pi, n_samples)
     infill = infill_at_slope(infill_fraction, slope * np.cos(phi), infill_critical_slope)
     displaced = vol * (1 - infill)
-    disp = a + h / 3.0
+    disp = a + pit_centroid_depth_fraction(n) * h
     rate = sp.uproot_rate_per_ha / 1.0e4           # events / m^2 / yr
     q = rate * float(np.mean(displaced * disp * np.cos(phi)))
     return {
@@ -580,21 +618,23 @@ class TreeThrowModel:
         return I, J, (I + 0.5) * dx - xc, (J + 0.5) * dx - yc
 
     # ------------------------------------------------------------ tree throw
-    def _ellipse(self, xc, yc, a, b, phi, pad):
-        """Window and elliptical-paraboloid weights with semi-axis `a` along azimuth phi, `b` across."""
+    def _ellipse(self, xc, yc, a, b, phi, pad, n=2.0):
+        """Window and weights 1 - rho^n over an ellipse with semi-axis `a` along azimuth phi, `b` across."""
         I, J, ox, oy = self._window(xc, yc, max(a, b) + pad)
         c, s = math.cos(phi), math.sin(phi)
         u = ox * c + oy * s
         v = -ox * s + oy * c
-        return I, J, u, v, np.clip(1.0 - (u / a) ** 2 - (v / b) ** 2, 0.0, None)
+        rho2 = (u / a) ** 2 + (v / b) ** 2
+        return I, J, u, v, np.clip(1.0 - rho2 ** (0.5 * n), 0.0, None)
 
     def uproot(self, x0: float, y0: float, R: float, H: float, phi: float,
                s_fall: Optional[float] = None) -> Dict[str, float]:
         """Apply one uprooting event at (x0, y0).
 
         R is the root plate's equivalent radius sqrt(a*b), H its depth and phi the
-        fall azimuth (radians, 0 = +x = downslope).  The pit is an elliptical
-        paraboloid `pit_aspect` times wider across the fall line than along it.
+        fall azimuth (radians, 0 = +x = downslope).  The pit has depth profile
+        H (1 - rho^n) (n = `pit_shape_exponent`; flat-floored for n > 2) over an
+        ellipse `pit_aspect` times wider across the fall line than along it.
         `s_fall` is the ground gradient along the fall direction (computed from
         the surface if omitted); it sets how much root-plate soil falls back into
         the pit.  Returns event diagnostics.
@@ -606,12 +646,13 @@ class TreeThrowModel:
         a_p, b_p = max(R / k, 0.5 * dx), max(R * k, 0.5 * dx)
 
         # ---- pit -----------------------------------------------------------
-        I, J, u, v, shape = self._ellipse(x0, y0, a_p, b_p, phi, dx)
+        n_pit = self.sp.pit_shape_exponent
+        I, J, u, v, shape = self._ellipse(x0, y0, a_p, b_p, phi, dx, n_pit)
         if shape.sum() <= 0:                            # sub-grid plate: use host cell
             shape = ((I == int(x0 / dx)) & (J == int(y0 / dx))).astype(float)
-        # Scale so the discrete pit volume equals the analytic paraboloid volume,
+        # Scale so the discrete pit volume equals the analytic pit volume,
         # then drop any part of the pit beyond the ridge or in the channel cell.
-        depth = shape * (0.5 * math.pi * a_p * b_p * H) / (shape.sum() * ca)
+        depth = shape * (pit_volume_factor(n_pit) * math.pi * a_p * b_p * H) / (shape.sum() * ca)
         depth *= (I >= 0) & (I < self.nx - 1)
         Ii, Jj = np.clip(I, 0, self.nx - 1), J % self.ny
         m = depth > 0
@@ -644,7 +685,7 @@ class TreeThrowModel:
         mound_vol = volume - infill
 
         # ---- mound: root plate rotated about a hinge at the pit edge -------
-        d = a_p + H / 3.0                                 # centroid travel during rotation
+        d = a_p + pit_centroid_depth_fraction(n_pit) * H  # centroid travel during rotation
         cphi, sphi = math.cos(phi), math.sin(phi)
         xm, ym = x0 + d * cphi, y0 + d * sphi
         a = max(a_p, dx)                                  # semi-axis along fall line (soil shed from a
@@ -907,7 +948,10 @@ class TreeThrowModel:
         q_c = self.moment_fresh / (area * T)    # collapse of fresh pits and mounds
         q_all = q_tt + q_c
         s_mean = (self.z_initial[0, 0] - self.z_initial[-1, 0]) / (self.x[-1] - self.x[0])
-        expected = expected_tree_throw(self.sp, cfg.slope, cfg.infill_fraction, cfg.infill_critical_slope)
+        expected = expected_tree_throw(self.sp, cfg.slope, cfg.infill_fraction, cfg.infill_critical_slope,
+                                       soil_depth=cfg.initial_soil_depth if cfg.soil_model else None,
+                                       bedrock_pluck_fraction=cfg.bedrock_pluck_fraction,
+                                       rock_to_soil_dilation=cfg.rock_to_soil_dilation)
         ev = np.array(self.event_log) if self.event_log else np.zeros((0, 9))
         prof0, prof1 = self.z_initial.mean(axis=1), self.z.mean(axis=1)
         return {
@@ -1182,7 +1226,7 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--no-tree-throw", action="store_true", help="diffusion-only control run")
     g.add_argument("--infill", type=float, default=0.3,
                    help="fraction of root-wad soil falling back into the pit on flat ground")
-    g.add_argument("--fresh-diffusivity", type=float, default=0.15,
+    g.add_argument("--fresh-diffusivity", type=float, default=0.20,
                    help="extra diffusivity of freshly disturbed pit-mound soil (m²/yr)")
     g.add_argument("--fresh-decay-time", type=float, default=3.0,
                    help="e-folding time of the fresh-soil diffusivity (yr)")
