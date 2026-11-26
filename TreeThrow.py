@@ -1159,32 +1159,32 @@ class TreeThrowModel:
             yield np.arange(nr), full_cols, True, Dc
             return
         structure = np.ones((3, 3), bool)
-        # Padding only across columns wraps the halo in y, without joining ridge
-        # and channel.  The halo consists of cells adjacent to D > 0 faces.
-        padded = np.pad(Dc > 0, ((0, 0), (1, 1)), mode="wrap")
-        halo = ndimage.binary_dilation(padded, structure=structure)[:, 1:-1]
+        # A separable maximum filter gives the same one-cell Boolean dilation,
+        # without allocating a padded band.  Only the y direction is periodic.
+        halo = ndimage.maximum_filter(Dc > 0, size=3, mode=("constant", "wrap"), cval=0)
         lab, n = ndimage.label(halo, structure=structure)
         if n == 0:
             return
         # Union labels on opposite sides of the cylinder.  Labelling a periodic
         # bounding box alone does not connect the seam's components.
-        parent = np.arange(n + 1)
+        if n > 1:
+            parent = np.arange(n + 1)
 
-        def root(k):
-            while parent[k] != k:
-                parent[k] = parent[parent[k]]
-                k = parent[k]
-            return k
+            def root(k):
+                while parent[k] != k:
+                    parent[k] = parent[parent[k]]
+                    k = parent[k]
+                return k
 
-        pairs = np.concatenate((np.column_stack((lab[:, 0], lab[:, -1])),
-                                np.column_stack((lab[:-1, 0], lab[1:, -1])),
-                                np.column_stack((lab[1:, 0], lab[:-1, -1]))))
-        pairs = pairs[(pairs[:, 0] > 0) & (pairs[:, 1] > 0) & (pairs[:, 0] != pairs[:, 1])]
-        for a, b in np.unique(pairs, axis=0):
-            ra, rb = root(a), root(b)
-            parent[max(ra, rb)] = min(ra, rb)
-        if pairs.size:
-            lab = np.array([root(k) for k in range(n + 1)])[lab]
+            pairs = np.concatenate((np.column_stack((lab[:, 0], lab[:, -1])),
+                                    np.column_stack((lab[:-1, 0], lab[1:, -1])),
+                                    np.column_stack((lab[1:, 0], lab[:-1, -1]))))
+            pairs = pairs[(pairs[:, 0] > 0) & (pairs[:, 1] > 0) & (pairs[:, 0] != pairs[:, 1])]
+            if pairs.size:
+                for a, b in np.unique(pairs, axis=0):
+                    ra, rb = root(a), root(b)
+                    parent[max(ra, rb)] = min(ra, rb)
+                lab = np.array([root(k) for k in range(n + 1)])[lab]
         objs = ndimage.find_objects(lab)
         for k, obj in enumerate(objs, start=1):
             if obj is None:       # label removed by periodic union

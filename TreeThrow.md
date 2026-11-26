@@ -41,7 +41,7 @@ The GUI needs tkinter. It is included with the python.org and conda builds; on D
 * **Disturbance**: fire, windstorm or insect/pathogen outbreak regime, with presets.
 * **Output**: animation frames, pixel scale, CRT scanlines and results folder.
 
-Hover over any field for an explanation. Use File → Load/Save species JSON for custom species. **Run** starts the simulation in the background with a progress bar, and **Stop** ends it early and keeps what has been simulated.
+Hover over any field for an explanation. Use File → Load/Save species JSON for custom species. **Run** starts the simulation in the background with a progress bar. **Stop** ends it after the current simulation step or animation frame and keeps what has been simulated. The stopped result opens at its final frame; playback remains available.
 
 **Right: results.**
 
@@ -81,7 +81,7 @@ Frames are spaced evenly over the run. Extra frames are always captured at each 
 | Pit | Flat-floored bowl with depth profile `H (1 − ρⁿ)` (`pit_shape_exponent`, default n = 4, which has the volume of a half-ellipsoid; n = 2 is a paraboloid), equivalent radius R, `pit_aspect` (default 1.5) times wider across the fall line than along it. It is limited by soil thickness, and a fraction (`bedrock_pluck_fraction`) of root penetration below the soil plucks bedrock. That rock becomes soil, dilated by `rho_r/rho_s`. |
 | Mound | The root plate rotates about a hinge at the pit edge. Soil is deposited as an elliptical mound as long as the pit, centred `a + c(n) H` from the stump along the fall line (a = semi-axis along the fall line; c = depth of the excavated soil's centroid, 0.4 H for n = 4). |
 | Infill | A fraction of root-plate soil falls back into the pit: `f0 (1 - S_fall / S_crit)`, clipped to 0–0.95. `S_fall` is the ground gradient along the fall direction, `f0 = 0.3` (`--infill`) and `S_crit = tan 47°` (Norman et al. 1995, secondary). Downslope falls shed more soil away from the pit, so displaced volume grows with slope. |
-| Pit-mound collapse | Pit, mound and a 0.5 m margin are marked as fresh soil. The rate is scaled per species (`fresh_collapse_scale`; 0.4 for deciduous). This soil diffuses with an extra `D_f exp(-age/τ)`, D_f = 0.20 m²/yr and τ = 3 yr (`--fresh-diffusivity`, `--fresh-decay-time`), calibrated to the 1–5 yr spruce chronosequence of Zadrożny et al. (2017). Collapse acts on relief relative to the surrounding undisturbed surface, so regional creep is left to the background diffusion. Each connected patch of fresh soil is solved separately on its own time step, so overlapping disturbances are not double-counted. Collapse ends after 6τ. Volume is conserved and a flux limiter keeps soil thickness non-negative. |
+| Pit-mound collapse | Pit, mound and a 0.5 m margin are marked as fresh soil. The rate is scaled per species (`fresh_collapse_scale`; 0.4 for deciduous). This soil diffuses with an extra `D_f exp(-age/τ)`, D_f = 0.20 m²/yr and τ = 3 yr (`--fresh-diffusivity`, `--fresh-decay-time`), calibrated to the 1–5 yr spruce chronosequence of Zadrożny et al. (2017). Collapse acts on relief relative to the surrounding undisturbed surface, so regional creep is left to the background diffusion. Patches are joined across the periodic sides and wherever their one-cell transport halos interact, then solved separately on their own time steps. Collapse ends after 6τ. Volume is conserved and a flux limiter keeps soil thickness non-negative. |
 | Thin soils | Where soil is thinner than 0.5 m, root plates are shallower, down to half depth on bare rock (Gabet & Mudd 2010). |
 | Root cycling (optional) | `--root-cycle` adds the diffusivity of soil moved by root growth and decay (Hoffman & Anderson 2013): roots follow `Y = 1 − β^(100z)`, and only roots in the A horizon lift the surface. Off by default, because the background diffusivity already includes it with other creep. |
 | Soil production | `P = P0 exp(-h/h0)` |
@@ -182,7 +182,7 @@ For each species, in `--output/<species>/`:
 * the root-cycle flux formula against Hoffman & Anderson's (2013) published values;
 * QA/QC regressions: the global volume budget, non-negative soil, overlapping disturbances, periodic edges and input validation.
 
-`python validation/qaqc_checks.py` runs the wider QA/QC checks: budget closure across 12 configurations, grid and time-step convergence, determinism and cost. The findings and fixes are recorded in [`validation/QAQC.md`](validation/QAQC.md).
+`python validation/qaqc_checks.py` runs the wider QA/QC checks: budget closure across 21 configurations (including bare rock, very thin soil and near-critical slopes), deciduous and lodgepole grid sensitivity, disturbance time-step sensitivity, determinism and cost. Conservation, positivity and finiteness failures cause a nonzero exit status; the report is written to `validation/results/qaqc_report.txt`. The findings and fixes are recorded in [`validation/QAQC.md`](validation/QAQC.md) and [`validation/QAQC_2.md`](validation/QAQC_2.md).
 * volume conservation, smoothing and switch-off of fresh pit-mound collapse;
 * seed reproducibility and the CLI.
 
@@ -202,3 +202,8 @@ These sources were read in full:
 * the Harvard Forest HF320-03 data summary (`validation/forest_papers.py`).
 
 Gallaway et al. (2009) was read from its abstract and introduction only. The remaining benchmarks come from abstracts and search summaries and are marked *secondary*. Results, figures, the benchmark list and a comparison with the previous model version are in [`validation/results/VALIDATION_REPORT.md`](validation/results/VALIDATION_REPORT.md).
+
+For reproducible CPU profiles and timings, run `python validation/profile_tree_throw.py --output <directory>`.
+It profiles all nine species on a 40 × 40 m, 3000-year hillslope, then times two unprofiled runs per species, cold/cached summaries and animation rendering. Model configurations, state fingerprints and cProfile files are saved alongside the timing JSON.
+
+Run durations need not be a multiple of `dt`; the final step is shortened to end at the requested duration. Disturbances are still evaluated at the start of a population step: an off-grid requested event time can be delayed by less than `dt`, and stochastic return intervals are drawn from the applied event time. Use a smaller `dt` when the timing of short disturbance pulses matters.

@@ -476,18 +476,22 @@ class SecondReviewRegressionTests(unittest.TestCase):
     def test_disjoint_patches_equal_one_band_solve(self):
         m = model(soil_model=False)
         rng = np.random.default_rng(17)
-        h = rng.normal(size=(12, 24))
-        Dc = np.zeros_like(h)
-        Dc[2:4, 0:2] = Dc[2:4, -2:] = 0.2
-        Dc[7:9, 10:12] = 0.2
-        ref = h.copy()
-        m._collapse_patch(ref, np.zeros_like(h), Dc, 0.3, True)
-        for rows, cols, periodic, D in m._fresh_patches(Dc):
-            ix = np.ix_(rows, cols)
-            local = h[ix]
-            m._collapse_patch(local, np.zeros_like(local), D, 0.3, periodic)
-            h[ix] = local
-        np.testing.assert_allclose(h, ref, rtol=0, atol=1e-14)
+        for shared_halo in (False, True):
+            h = rng.normal(size=(12, 24))
+            Dc = np.zeros_like(h)
+            if shared_halo:
+                Dc[3, 4] = Dc[3, 6] = 0.2
+            else:
+                Dc[2:4, 0:2] = Dc[2:4, -2:] = 0.2
+                Dc[7:9, 10:12] = 0.2
+            ref = h.copy()
+            m._collapse_patch(ref, np.zeros_like(h), Dc, 0.3, True)
+            for rows, cols, periodic, D in m._fresh_patches(Dc):
+                ix = np.ix_(rows, cols)
+                local = h[ix]
+                m._collapse_patch(local, np.zeros_like(local), D, 0.3, periodic)
+                h[ix] = local
+            np.testing.assert_allclose(h, ref, rtol=0, atol=1e-14)
 
     def test_flux_limiter_keeps_soil_positive_and_balances_boundary(self):
         m = model()
