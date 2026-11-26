@@ -222,6 +222,10 @@ def run_jobs(jobs, workers):
         return list(ex.map(_run, jobs))
 
 
+# The four generic forest types; the keystone presets are tested against their own sources (S, G, C, L, H).
+GENERIC = ("pine", "deciduous", "aspen", "spruce")
+
+
 def verdict(ok, partial=False):
     return "PASS" if ok else ("PARTIAL" if partial else "FAIL")
 
@@ -423,8 +427,8 @@ def test_mound_persistence(quick: bool):
 
 def make_figures(R):
     plt = tt._import_pyplot()
-    colors = {"pine": "tab:green", "deciduous": "tab:orange", "aspen": "tab:olive", "spruce": "tab:blue"}
-    fig, ax = plt.subplots(2, 3, figsize=(16, 9.5))
+    colors = tt.SPECIES_COLORS
+    fig, ax = plt.subplots(2, 3, figsize=(17, 10))
     fig.suptitle("TreeThrow.py — literature validation", fontsize=13)
 
     # V1 event volumes
@@ -432,6 +436,7 @@ def make_figures(R):
     b = BENCHMARKS["boubin_pit_mound_volume"]["value"]
     data = [np.array(R["_vols"][k]) for k in tt.SPECIES]
     a.boxplot(data, tick_labels=list(tt.SPECIES), showfliers=False, whis=(5, 95))
+    a.tick_params(axis="x", labelrotation=45, labelsize=7)
     for i, k in enumerate(tt.SPECIES):
         a.plot(i + 1, data[i].mean(), "o", color=colors[k])
     a.axhspan(b["min_m3"], b["max_m3"], color="gray", alpha=0.15, label="Boubín range 0.1–5.6 m³")
@@ -462,6 +467,7 @@ def make_figures(R):
     a.plot(list(map(float, sh)), [100 * v for v in sh.values()], "o-", color="tab:orange", label="deciduous (model)")
     for k in tt.SPECIES:
         a.plot(0.35, 100 * R["V3_flux_share"]["share_by_species_at_S0.35"][k], "D", color=colors[k], label=f"{k} S=0.35")
+    a.set_yscale("log")
     a.axhspan(100 * bd["share_min"], 100 * bd["share_max"], color="gray", alpha=0.2, label="Doane 2021: 11–18 %")
     a.set(title="V3  Tree-throw share of total flux", xlabel="gradient (m/m)", ylabel="share (%)")
     a.legend(fontsize=8)
@@ -472,6 +478,7 @@ def make_figures(R):
     ks = list(tt.SPECIES)
     a.bar(ks, [v4[k]["q_tt_m2_yr"] for k in ks], color=[colors[k] for k in ks],
           label="model q_tt incl. collapse (S=0.35)")
+    a.tick_params(axis="x", labelrotation=45, labelsize=7)
     bc = BENCHMARKS["constantine_2012_flux"]["value"]["flux_m2_yr"]
     a.axhline(bc, color="k", ls="--", label="Constantine 2012 ≈ 2×10⁻⁴")
     qd = np.mean([v4[k]["q_tt_m2_yr"] / v4[k]["q_tt_over_q_creep"] for k in ks])
@@ -495,7 +502,7 @@ def make_figures(R):
     a2 = a.twinx()
     a2.bar(xx + 0.2, cov, 0.4, color="tab:orange", label="cover >10 cm relief (%)")
     a2.axhline(100 * br["pit_mound_cover_min"], color="tab:orange", ls="--", lw=1)
-    a.set_xticks(xx, labels, fontsize=8)
+    a.set_xticks(xx, labels, fontsize=7, rotation=45, ha="right")
     a.set(title="V5  Uprooting rate & pit-mound cover\n(dashed = Razula: 1.5 /ha/yr, >14 %)",
           ylabel="uprootings / ha / yr")
     a2.set_ylabel("ground cover (%)")
@@ -660,7 +667,7 @@ def write_report(R, runtime, quick):
              f"{v2['verdict_flux_increases_with_slope']} |")
     L.append(f"| V3 tree-throw share of flux (deciduous, S = 0.35) | 11–18 % (Doane 2021, primary) | "
              f"{100 * v3['share_by_species_at_S0.35']['deciduous']:.0f} % | {v3['verdict']} |")
-    for k in tt.SPECIES:
+    for k in GENERIC:
         L.append(f"| V4 flux within 10× of Constantine 2012 ({k}) | 2×10⁻⁴ m²/yr | "
                  f"{v4[k]['q_tt_m2_yr']:.1e} m²/yr | {v4[k]['verdict_vs_constantine']} |")
     L.append(f"| V4 tree throw ≈ 1 % of creep (deciduous) | ≤ ~1–3 % (Gallaway 2007/2009) | "

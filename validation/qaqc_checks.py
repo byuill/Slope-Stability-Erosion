@@ -80,6 +80,13 @@ if __name__ == "__main__":
         ("pine no soil", "pine", dict(base, soil_model=False)),
         ("spruce narrow plot", "spruce", dict(base, width=3.0)),
         ("deciduous dt=5", "deciduous", dict(base, dt=5.0, record_interval=10)),
+        ("oak snags", "oak", base),
+        ("lodgepole fire", "lodgepole_pine", dict(base, disturbance="fire", first_disturbance=500)),
+        ("hemlock outbreaks", "eastern_hemlock", dict(base, disturbance="outbreak", disturbance_interval=300,
+                                                      disturbance_severity=0.6)),
+        ("douglas_fir storms", "douglas_fir", dict(base, disturbance="windstorm", disturbance_interval=100,
+                                                   disturbance_severity=0.2)),
+        ("ponderosa thin soil", "ponderosa_pine", dict(base, initial_soil_depth=0.2)),
     ]
     print("== Volume budget (hillslope rows) ==")
     with ProcessPoolExecutor(4) as ex:

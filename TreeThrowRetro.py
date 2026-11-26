@@ -157,7 +157,17 @@ class RunMeta:
 
 
 def species_kind(sp) -> str:
+    builtin = {"pine": "pine", "deciduous": "deciduous", "aspen": "aspen", "spruce": "spruce", "douglas_fir": "fir",
+               "oak": "oak", "lodgepole_pine": "lodgepole", "ponderosa_pine": "ponderosa",
+               "eastern_hemlock": "hemlock"}
+    if sp.key in builtin:
+        return builtin[sp.key]
     k = (sp.key + " " + sp.name).lower()
+    for kind, words in (("fir", ("douglas", "pseudotsuga")), ("hemlock", ("hemlock", "tsuga")),
+                        ("lodgepole", ("lodgepole", "contorta")), ("ponderosa", ("ponderosa",)),
+                        ("oak", ("oak", "quercus"))):
+        if any(w in k for w in words):
+            return kind
     for kind in ("spruce", "aspen", "pine"):
         if kind in k:
             return kind
@@ -264,30 +274,43 @@ def run_with_frames(sp, cfg, n_frames=200, frame_every=None, progress=None, stop
 # ----------------------------------------------------------------------------
 # Sprites
 # ----------------------------------------------------------------------------
-HMAX = {"pine": 22, "spruce": 26, "deciduous": 20, "aspen": 18}
+HMAX = {"pine": 22, "spruce": 26, "deciduous": 20, "aspen": 18,
+        "fir": 30, "hemlock": 24, "lodgepole": 22, "ponderosa": 26, "oak": 20}
 TREE_COLOURS = {   # near: (canopy, highlight, trunk); far versions are darker
     "pine": (GREEN, LGREEN, BROWN), "spruce": (GREEN, CYAN, BROWN),
     "deciduous": (GREEN, LGREEN, BROWN), "aspen": (LGREEN, YELLOW, WHITE),
+    "fir": (GREEN, LGREEN, BROWN), "hemlock": (GREEN, LCYAN, DGRAY), "lodgepole": (GREEN, LGREEN, LGRAY),
+    "ponderosa": (LGREEN, YELLOW, BROWN), "oak": (GREEN, YELLOW, DGRAY),
 }
 MAP_COLOURS = {"pine": (GREEN, LGREEN), "spruce": (GREEN, CYAN), "deciduous": (LGREEN, GREEN),
-               "aspen": (YELLOW, LGREEN)}
+               "aspen": (YELLOW, LGREEN), "fir": (GREEN, LGREEN), "hemlock": (GREEN, LCYAN),
+               "lodgepole": (GREEN, LGREEN), "ponderosa": (LGREEN, YELLOW), "oak": (GREEN, YELLOW)}
+# Sprite family and crown width / height for each kind.
+SHAPES = {"pine": ("pine", 0.6), "spruce": ("spruce", 0.42), "fir": ("spruce", 0.34), "hemlock": ("spruce", 0.55),
+          "lodgepole": ("pine", 0.32), "ponderosa": ("pine", 0.7), "aspen": ("aspen", 0.5),
+          "deciduous": ("deciduous", 0.85), "oak": ("deciduous", 1.1)}
 
 
 def make_tree_sprite(kind, h, far=False):
     """Pixel-art tree of height h px.  Returns an index array (CLEAR = transparent)."""
     h = max(int(h), 3)
-    canopy, hi, trunk = TREE_COLOURS[kind]
+    canopy, hi, trunk = TREE_COLOURS.get(kind, TREE_COLOURS["deciduous"])
     if far:
         canopy, hi, trunk = (GREEN, YELLOW, LGRAY) if kind == "aspen" else (GREEN, GREEN, DGRAY)
-    if kind in ("pine", "spruce"):
-        w = max(3, int(round(h * (0.42 if kind == "spruce" else 0.6))) | 1)
+    family, width = SHAPES.get(kind, SHAPES["deciduous"])
+    if family in ("pine", "spruce"):
+        w = max(3, int(round(h * width)) | 1)
         spr = np.full((h, w), CLEAR, np.uint8)
         cx = w // 2
         th = max(1, h // 6)
         crown = h - th
         for r in range(crown):
             frac = (r + 1) / crown
-            tier = (r % 4) / 4.0 if kind == "spruce" else (r % 3) / 3.0
+            tier = (r % 4) / 4.0 if family == "spruce" else (r % 3) / 3.0
+            if kind == "lodgepole" and r > crown // 2:    # self-pruned: bare lower stem
+                break
+            if kind == "hemlock":                         # drooping, feathery tiers
+                tier = 1.0 - (r % 3) / 3.0
             half = int(round(frac * (w / 2) * (0.75 + 0.25 * tier)))
             spr[r, max(cx - half, 0):cx + half + 1] = canopy
             spr[r, cx + 1:cx + half + 1] = hi if (r % 2 == 0 or far) else canopy
@@ -295,11 +318,13 @@ def make_tree_sprite(kind, h, far=False):
             spr[r, min(cx + half, w - 1)] = BLACK
         spr[0, cx] = BLACK if h > 6 else canopy
         spr[crown:, cx] = trunk
+        if kind == "lodgepole":
+            spr[crown // 2 + 1:, cx] = trunk
         if h >= 16:
             spr[crown:, cx - 1] = trunk if trunk != WHITE else BLACK
         return spr
-    if kind == "aspen":
-        w = max(3, int(round(h * 0.5)) | 1)
+    if family == "aspen":
+        w = max(3, int(round(h * width)) | 1)
         ch = max(2, int(round(h * 0.62)))
         spr = np.full((h, w), CLEAR, np.uint8)
         cx = w // 2
@@ -313,8 +338,8 @@ def make_tree_sprite(kind, h, far=False):
         for r in range(ch, h, 3):
             spr[r, cx] = BLACK
         return spr
-    # deciduous: round crown, forked trunk
-    w = max(4, int(round(h * 0.85)))
+    # deciduous: round crown, forked trunk (oak: broad, spreading crown)
+    w = max(4, int(round(h * width)))
     ch = max(3, int(round(h * 0.62)))
     spr = np.full((h, w), CLEAR, np.uint8)
     cx = (w - 1) / 2
@@ -428,6 +453,7 @@ class RetroRenderer:
         self.rough_max = max(max(f.stats["roughness_cm"] for f in frames), 1.0)
         self.fire_times = [d[0] for f in frames for d in f.disturbances if d[1] == "fire"]
         self.storm_times = [d[0] for f in frames for d in f.disturbances if d[1] == "windstorm"]
+        self.outbreak_times = [d[0] for f in frames for d in f.disturbances if d[1] == "outbreak"]
 
     # ---------------------------------------------------------------- helpers
     def sprite(self, key, *args):
@@ -682,7 +708,7 @@ class RetroRenderer:
     def _title(self, img, f, fire_age, storm_age, i):
         img[0:10, :] = BLUE
         img[10, :] = LBLUE
-        name = f"TREE-THROW  {self.meta.species_key[:12]}"
+        name = f"TREE-THROW  {self.meta.species_key.replace('_', ' ')[:15]}"
         draw_text(img, 3, 2, name, YELLOW, BLACK)
         yr = f"YEAR {int(round(f.t)):05d}"
         draw_text(img, W_PX - text_width(yr) - 3, 2, yr, WHITE, BLACK)
@@ -691,6 +717,8 @@ class RetroRenderer:
             tag, c = "FIRE!", LRED
         elif storm_age is not None:
             tag, c = "STORM!", LCYAN
+        elif any(0 <= f.t - tb <= max(3.0, self.meta.frame_every * 1.01) for tb in self.outbreak_times):
+            tag, c = "OUTBREAK!", LMAGENTA
         if tag and i % 2 == 0:
             draw_text(img, 175, 2, tag, c, BLACK)
         draw_text(img, 4, 102, "PLAN VIEW", WHITE)

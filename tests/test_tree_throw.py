@@ -22,7 +22,8 @@ def model(species="pine", **changes):
 
 class SpeciesTests(unittest.TestCase):
     def test_builtin_species_are_valid_and_distinct(self):
-        self.assertEqual(set(tt.SPECIES), {"pine", "deciduous", "aspen", "spruce"})
+        self.assertEqual(set(tt.SPECIES), {"pine", "deciduous", "aspen", "spruce", "douglas_fir", "oak",
+                                           "lodgepole_pine", "ponderosa_pine", "eastern_hemlock"})
         for sp in tt.SPECIES.values():
             sp.validate()
         sp = tt.SPECIES
@@ -247,7 +248,7 @@ class ForestDynamicsTests(unittest.TestCase):
         n_trees = m.age.size
         m.run(progress=False)
         ev = np.array(m.event_log)
-        snag = ev[ev[:, 9] == 2]
+        snag = ev[ev[:, 9] == 3]                          # falls of fire-killed snags
         self.assertGreater(len(snag), 0.8 * n_trees)      # nearly all snags have fallen after 60 yr
         early, late = snag[snag[:, 0] < 10], snag[snag[:, 0] > 25]
         self.assertGreater(early[:, 6].mean(), 1.5 * late[:, 6].mean())   # decayed plates hold less soil
@@ -275,6 +276,91 @@ class ForestDynamicsTests(unittest.TestCase):
         self.assertGreater(m.D_root, 0)
         m.step()
         self.assertGreater(m.moment_diff, 0)
+
+
+class KeystoneSpeciesTests(unittest.TestCase):
+    """Snag pathway, wind vulnerability, outbreaks and the contrasting keystone presets."""
+
+    def test_presets_express_contrasting_dynamics(self):
+        sp = tt.SPECIES
+        rates = {k: tt.stand_rates(s) for k, s in sp.items()}
+        # Taproots resist wind; shallow plates do not.
+        self.assertLess(sp["oak"].wind_vulnerability, 1.0)
+        self.assertLess(sp["ponderosa_pine"].wind_vulnerability, 1.0)
+        self.assertGreater(sp["eastern_hemlock"].wind_vulnerability, 1.0)
+        self.assertGreater(sp["lodgepole_pine"].wind_vulnerability, 1.0)
+        # Douglas fir, oak and ponderosa mostly die standing; uprooting is a small share of deaths.
+        for k in ("douglas_fir", "oak", "ponderosa_pine"):
+            self.assertGreater(sp[k].snag_fraction, 0.5)
+            self.assertLess(rates[k]["uprooting_share_of_deaths"], 0.35)
+        self.assertAlmostEqual(rates["douglas_fir"]["uprooting_share_of_deaths"], 0.15, delta=0.02)  # Gabet & Mudd
+        self.assertAlmostEqual(rates["douglas_fir"]["deaths_per_ha_yr"] / sp["douglas_fir"].density, 1 / 330,
+                               delta=0.0006)
+        self.assertGreater(rates["oak"]["snag_share_of_uprootings"], 0.5)       # oaks topple as decayed snags
+        self.assertGreater(rates["eastern_hemlock"]["uprooting_share_of_deaths"], 0.5)
+        # Ponderosa is the rarest thrower; lodgepole the densest conifer with the smallest plates.
+        self.assertEqual(min(rates, key=lambda k: rates[k]["uprootings_per_ha_yr"]), "ponderosa_pine")
+        self.assertEqual(max((k for k in sp if k != "aspen"), key=lambda k: sp[k].density), "lodgepole_pine")
+        vols = {k: tt.expected_tree_throw(s, 0.35, n_samples=20000)["mean_event_volume_m3"] for k, s in sp.items()}
+        self.assertLess(vols["oak"], 0.2 * vols["douglas_fir"])
+        self.assertLess(vols["lodgepole_pine"], vols["aspen"])
+
+    def test_snag_pathway_matches_stand_rates(self):
+        sp = tt.replace(tt.SPECIES["oak"], snag_fall_rate=0.1)
+        cfg = tt.HillslopeConfig(length=60, width=60, slope=0.3, dx=0.5, years=800, diffusivity=0.0,
+                                 soil_model=False, seed=8, n_snapshots=2)
+        m = tt.TreeThrowModel(sp, cfg)
+        standing = []
+        for _ in range(800):
+            m.step()
+            if m.time > 200:
+                standing.append(m.snags["x"].size)
+        s, r = m.summary(), tt.stand_rates(sp)
+        ev = np.array(m.event_log)
+        self.assertAlmostEqual(s["uprooting_share_of_deaths"] / r["uprooting_share_of_deaths"], 1.0, delta=0.15)
+        self.assertAlmostEqual(np.mean(ev[:, 9] == 2) / r["snag_share_of_uprootings"], 1.0, delta=0.15)
+        n_standing = np.mean(standing) / (m.L_active * m.W / 1e4)
+        self.assertAlmostEqual(n_standing / r["standing_dead_per_ha"], 1.0, delta=0.2)
+        # Snag root plates have decayed: smaller than immediate uprootings.
+        self.assertLess(ev[ev[:, 9] == 2, 6].mean(), 0.8 * ev[ev[:, 9] == 0, 6].mean())
+        rel = s["effective_D_tree_throw_m2_yr"] / s["expected_D_tree_throw_m2_yr"]
+        self.assertAlmostEqual(rel, 1.0, delta=0.3)
+
+    def test_expected_volume_accounts_for_snag_decay(self):
+        base = tt.replace(tt.SPECIES["pine"], uproot_fraction=0.0, snag_fraction=1.0, snag_uproot_fraction=1.0)
+        fast = tt.expected_tree_throw(tt.replace(base, snag_fall_rate=10.0), 0.3, n_samples=50000)
+        slow = tt.expected_tree_throw(tt.replace(base, snag_fall_rate=0.05), 0.3, n_samples=50000, root_decay_time=15.0)
+        # E[exp(-T/tau)] for T ~ Exp(k) is k / (k + 1/tau).
+        k, tau = 0.05, 15.0
+        self.assertAlmostEqual(slow["mean_event_volume_m3"] / fast["mean_event_volume_m3"],
+                               k / (k + 1 / tau) / (10.0 / (10.0 + 1 / tau)), delta=0.02)
+
+    def test_wind_vulnerability_scales_storm_kills(self):
+        kills = {}
+        for v in (0.0, 0.5, 1.0):
+            sp = tt.replace(tt.SPECIES["spruce"], wind_vulnerability=v)
+            cfg = tt.HillslopeConfig(length=200, width=200, slope=0.3, dx=1.0, years=1, diffusivity=0.0,
+                                     soil_model=False, seed=5, n_snapshots=2, disturbance="windstorm",
+                                     first_disturbance=0.0, disturbance_severity=0.08)
+            m = tt.TreeThrowModel(sp, cfg)
+            m.step()
+            kills[v] = m.disturbance_log[0][2]
+        self.assertEqual(kills[0.0], 0)
+        self.assertAlmostEqual(kills[0.5] / kills[1.0], 0.5, delta=0.1)
+
+    def test_outbreak_kills_large_trees_standing(self):
+        cfg = tt.HillslopeConfig(length=60, width=60, slope=0.3, dx=0.5, years=40, diffusivity=0.0,
+                                 soil_model=False, seed=9, n_snapshots=2, disturbance="outbreak",
+                                 first_disturbance=0.0, disturbance_interval=0.0, disturbance_severity=0.6)
+        m = tt.TreeThrowModel(tt.SPECIES["eastern_hemlock"], cfg)
+        R_all = tt.plate_at_age(m.sp, m.R_mature, m.H_mature, m.age)[0].mean()
+        m.step()
+        killed = m.snags["killed"] == 1
+        self.assertGreater(killed.sum(), 0.3 * m.age.size)
+        self.assertGreater(m.snags["R"][killed].mean(), R_all)      # large trees attacked preferentially
+        self.assertEqual(m.n_events_by_cause["windstorm"], 0)       # nothing is thrown by the outbreak itself
+        m.run(progress=False)
+        self.assertGreater(m.n_events_by_cause["disturbance_snag"], 0.2 * killed.sum())
 
 
 class QAQCRegressionTests(unittest.TestCase):

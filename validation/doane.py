@@ -160,7 +160,6 @@ def plot(res, path):
     plt = tt._import_pyplot()
     fig, ax = plt.subplots(1, 3, figsize=(16, 5))
     fig.suptitle("Validation against Doane et al. (2021) — forested hillslopes, Brown County, Indiana", fontsize=12)
-    colors = {"pine": "tab:green", "deciduous": "tab:orange", "aspen": "tab:olive", "spruce": "tab:blue"}
     v = res["D2_variance"]
 
     a = ax[0]
@@ -170,7 +169,7 @@ def plot(res, path):
            label="model deciduous (mean of seeds)")
     for k, d in v["species_at_S0.35"].items():
         if k != "deciduous":
-            a.plot(0.35, d["variance_mean"], "D", color=colors[k], label=f"model {k}")
+            a.plot(0.35, d["variance_mean"], "D", color=tt.SPECIES_COLORS.get(k, "tab:gray"), label=f"model {k}")
     a.axhspan(DOANE["variance_min_m2"], DOANE["variance_max_m2"], color="gray", alpha=0.15,
               label="Doane: 0.001–0.03 m² (1,910 hillslopes)")
     a.set_yscale("log")

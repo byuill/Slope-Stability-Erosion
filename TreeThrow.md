@@ -10,7 +10,9 @@ root-wad (root-plate) size.
 python TreeThrow.py --list-species                       # parameter table
 python TreeThrow.py --species pine --length 60 --width 30 --slope 0.4
 python TreeThrow.py --species aspen --slope-deg 25 --years 3000
-python TreeThrow.py --compare --length 50 --width 20 --slope 0.35   # all four species
+python TreeThrow.py --compare --length 50 --width 20 --slope 0.35   # all nine species
+python TreeThrow.py --species lodgepole_pine --disturbance fire --first-disturbance 300 --years 600
+python TreeThrow.py --species eastern_hemlock --disturbance outbreak --first-disturbance 200 --disturbance-severity 0.7
 python TreeThrow.py --species deciduous --no-tree-throw   # diffusion-only control
 python TreeThrow.py --species pine --disturbance fire --first-disturbance 300 --years 600
 python TreeThrow.py --species spruce --disturbance windstorm --disturbance-interval 200 --disturbance-severity 0.3
@@ -33,10 +35,10 @@ The GUI needs tkinter. It is included with the python.org and conda builds; on D
 
 **Left: parameters, in tabs.**
 
-* **Forest**: species preset, stand dynamics, uprooting, and root plate and pit. A *Derived* box shows the deaths, uprooting rate and share, event volumes and expected tree-throw diffusivity implied by the current settings.
+* **Forest**: species preset, stand dynamics, uprooting and wind vulnerability, standing dead (snags), and root plate and pit. A *Derived* box shows the deaths, uprooting rate and share, event volumes and expected tree-throw diffusivity implied by the current settings.
 * **Hillslope**: geometry, run length and seed, soil and bedrock. A *Run size* box estimates the run time.
 * **Processes**: creep, tree-throw mechanics, pit-mound collapse and root cycling.
-* **Disturbance**: fire or windstorm regime, with presets.
+* **Disturbance**: fire, windstorm or insect/pathogen outbreak regime, with presets.
 * **Output**: animation frames, pixel scale, CRT scanlines and results folder.
 
 Hover over any field for an explanation. Use File → Load/Save species JSON for custom species. **Run** starts the simulation in the background with a progress bar, and **Stop** ends it early and keeps what has been simulated.
@@ -53,8 +55,12 @@ Hover over any field for an explanation. Use File → Load/Save species JSON for
 * **Side view**: the hillslope transect through the middle of the plot, with soil (brown) over bedrock (grey). Pit-mound relief and soil are vertically exaggerated by the factor shown. The trees are the simulated stand at their simulated sizes, with far trees drawn darker. An uprooting appears as a toppling log and upturned root wad, falling the way the tree fell.
 * **Fire**: a red sky, burning snags, then snags toppling over the following years.
 * **Windstorm**: rain and lightning, "TIMBER!", and a burst of uprootings.
+* **Outbreak**: an "OUTBREAK!" banner; killed trees stand as grey snags and topple over the following decades.
+* **Sprites**: each preset has its own tree: tall, narrow Douglas fir; broad oak; slender lodgepole with a bare lower stem; open ponderosa; feathery hemlock.
 * **Plan view**: pit-mound relief from blue pits to yellow mounds, tree canopies, snags, and new uprootings flashing with a line along their fall direction.
 * **HUD**: live trees, snags and uprootings; uprooting rate; mean soil depth; sediment yield; tree-throw share of the downslope flux; and a roughness graph.
+
+![The nine presets in the retro view (eastern hemlock during an adelgid outbreak)](docs/retro_species.png)
 
 Frames are spaced evenly over the run. Extra frames are always captured at each fire or storm and in the decades after it.
 
@@ -67,8 +73,10 @@ Frames are spaced evenly over the run. Extra frames are always captured at each 
 | Background diffusion | `q = -D grad z` (linear) or `D / (1 - (S/Sc)^2)` (nonlinear, `--transport nonlinear`); scaled by `1 - exp(-h/h*)` when soil is tracked |
 | Stand dynamics | Every tree has a position, an age, a lifespan drawn from N(mean, sd), and a mature root-plate diameter and depth drawn from lognormals with negative correlation (`size_depth_correlation`; wide plates are shallow, Zadrożny et al. 2017). Diameter grows as `1 - exp(-3 age / maturity_age)`; depth grows three times faster. Dead trees are replaced after an exponential regeneration delay, so stand density stays constant. |
 | Mortality | Trees die at their senescence lifespan or earlier, with a constant annual background probability (`background_mortality`), so small trees die too (Šamonil et al. 2017; Gabet & Mudd 2010). Stand density is held exactly at the species value. |
-| Uprooting | Trees younger than `min_uproot_age` snap or die standing (Gabet & Mudd 2010: 80 yr for Douglas fir). Older trees uproot with probability `uproot_fraction`. The rest snap or die standing and move no soil. |
-| Disturbance (optional) | `--disturbance windstorm`: storms kill a share of trees, preferentially large ones (Constantine et al. 2012), and most uproot. `--disturbance fire`: fire kills trees standing; snags topple at `snag_fall_rate` and their root plates decay over `root_decay_time` (Gallaway et al. 2009). Events recur at `disturbance_interval` (exponential waiting time) or once at `first_disturbance`. Off by default. |
+| Uprooting | Trees younger than `min_uproot_age` snap or die standing (Gabet & Mudd 2010: 80 yr for Douglas fir). Older trees uproot with probability `uproot_fraction`. |
+| Standing dead (snags) | Of the deaths not uprooted at once, a share `snag_fraction` stand dead; the rest snap and move no soil. Snags topple at `snag_fall_rate` (exponential) and uproot with probability `snag_uproot_fraction`. Their root plates have decayed by then: volume × `exp(-t/root_decay_time)`, applied as the cube root to diameter and depth. Snag falls are tree-throw events (cause 2) and are included in the analytic rates and expected transport. Douglas fir, oak and ponderosa die mostly standing; oak and lodgepole uproot mainly as decayed snags. |
+| Wind vulnerability | Storm kill probability is multiplied by the species' `wind_vulnerability`: shallow, plate-rooted species > 1 (hemlock 1.6, lodgepole 1.3), taproots < 1 (oak, ponderosa 0.4). |
+| Disturbance (optional) | `--disturbance windstorm`: storms kill a share of trees, preferentially large ones (Constantine et al. 2012), and most uproot. `--disturbance fire`: fire kills trees standing; snags topple at the species' snag fall rate (or `--snag-fall-rate`) and their root plates decay over `root_decay_time` (Gallaway et al. 2009). `--disturbance outbreak`: insects or pathogens (bark beetles, hemlock woolly adelgid) kill trees ≥ `storm_min_age` standing, preferentially large ones; they become snags. Falls of disturbance-killed snags are logged as cause 3. Events recur at `disturbance_interval` (exponential waiting time) or once at `first_disturbance`. Off by default. |
 | Fall direction | von Mises. Its mean vector is `fall_slope_bias * (local gradient over ~2R)` plus an optional wind vector (`--wind-dir`, `--wind-kappa`). |
 | Pit | Flat-floored bowl with depth profile `H (1 − ρⁿ)` (`pit_shape_exponent`, default n = 4, which has the volume of a half-ellipsoid; n = 2 is a paraboloid), equivalent radius R, `pit_aspect` (default 1.5) times wider across the fall line than along it. It is limited by soil thickness, and a fraction (`bedrock_pluck_fraction`) of root penetration below the soil plucks bedrock. That rock becomes soil, dilated by `rho_r/rho_s`. |
 | Mound | The root plate rotates about a hinge at the pit edge. Soil is deposited as an elliptical mound as long as the pit, centred `a + c(n) H` from the stump along the fall line (a = semi-axis along the fall line; c = depth of the excavated soil's centroid, 0.4 H for n = 4). |
@@ -107,6 +115,35 @@ Frames are spaced evenly over the run. Extra frames are always captured at each 
 * **Deciduous**: root-plate size gives a displaced volume of 2.2 m³, near beech and old-growth values of 2.4–2.8 m³. Pit-mounds collapse at 0.4× the spruce rate, which matches Doane's 5–10 yr couplets and the Harvard Forest relief of young couplets. Mortality, uprooting share (~27 %) and rate (~0.5 /ha/yr) follow Šamonil's lowland and highland reserves. Together they give an 11–18 % tree-throw share of hillslope flux, as Doane et al. (2021) measured for southern-Indiana hardwoods.
 * **Pine**: mortality, topple share (15 %) and minimum topple age (80 yr) follow Gabet & Mudd's (2010) Douglas-fir parameters. Root-plate size remains an estimate.
 * **Aspen** remains an estimate; no aspen-specific data were available.
+
+### Keystone species: contrasting tree-throw dynamics
+
+Five further presets represent the end-members of how forests move soil by tree throw. Each is tested against its own source where one exists (validation tests S, G, C, L, H).
+
+| Parameter | douglas_fir | oak | lodgepole_pine | ponderosa_pine | eastern_hemlock |
+|---|---|---|---|---|---|
+| Dynamics | massive plates, rare throws, snags stand for decades | taproot; dies standing, falls as a decayed snag | dense, fire-driven pulses of small throws | open, deep-rooted; tree throw rare | shallow plate; wind- and adelgid-driven |
+| Mean lifespan (yr) | 450 ± 150 | 300 ± 90 | 150 ± 40 | 400 ± 120 | 350 ± 100 |
+| Stand density (stems/ha) | 430 | 280 | 1000 | 120 | 400 |
+| Background mortality (/yr) | 0.002 | 0.008 | 0.004 | 0.002 | 0.004 |
+| Minimum uprooting age (yr) | 80 | 60 | 40 | 80 | 50 |
+| P(uproot \| eligible death) | 0.13 | 0.15 | 0.04 | 0.05 | 0.55 |
+| Snag fraction / fall rate (/yr) / P(uproot) | 0.6 / 0.03 / 0.08 | 0.7 / 0.08 / 0.55 | 0.5 / 0.08 / 0.4 | 0.6 / 0.04 / 0.1 | 0.5 / 0.1 / 0.5 |
+| Wind vulnerability | 1.0 | 0.4 | 1.3 | 0.4 | 1.6 |
+| Mature root plate, diameter × depth (m) | 2.9 × 0.8 | 1.6 × 0.4 | 1.2 × 0.3 | 2.0 × 0.55 | 3.0 × 0.55 |
+| → Deaths (/ha/yr) | 1.4 | 2.4 | 8.8 | 0.42 | 2.1 |
+| → Uprooting share of deaths | 15 % | 29 % | 20 % | 9 % | 54 % |
+| → of which falls of decayed snags | 24 % | 69 % | 83 % | 53 % | 17 % |
+| → Uprootings (/ha/yr) | 0.21 | 0.72 | 1.7 | 0.04 | 1.1 |
+| → Standing dead (/ha) | 25 | 19 | 53 | 6 | 6 |
+| → Mean displaced volume (m³) | 2.1 | 0.24 | 0.10 | 0.54 | 1.6 |
+| → Expected tree-throw D at S = 0.35 (m²/yr) | 7.4e-5 | 1.5e-5 | 1.1e-5 | 2.3e-6 | 2.9e-4 |
+
+* **Douglas fir** (Oregon Coast Range): mortality 1/330 per yr, 15 % of deaths topple, only trees > 80 yr, pits 3 ± 1.3 m³ with depth ≈ radius/2 (Gabet & Mudd 2010). It is the forest of Constantine et al.'s (2012) storm-frequency experiments.
+* **Oak** (Ranšpurk oak-ash reserve): 0.7 uprootings /ha/yr, 31 % of deaths, ~0.85 %/yr mortality, ~0.2 m³/ha/yr of root-plate soil (Šamonil et al. 2017). The taproot keeps live trees anchored, so most uprootings are decayed snags with small pits.
+* **Lodgepole pine** (Canadian Rockies): background tree throw moves ~2×10⁻⁶ m²/yr on steep plots. A stand-replacing fire raises flux by an order of magnitude as the snags fall, and a second pulse follows ~50 yr later as the regrown stand reaches uprooting age (Gallaway et al. 2009).
+* **Ponderosa pine** (Colorado Front Range): open, deep-rooted woodland where root growth and decay moves as much soil as tree throw (Hoffman & Anderson 2013).
+* **Eastern hemlock** (New England): estimates, not a site calibration. A shallow, wide plate and high wind vulnerability make it the most active thrower of the keystone set. `--disturbance outbreak` simulates hemlock woolly adelgid mortality.
 
 These are representative, literature-informed values in round numbers. Calibrate
 them against stand inventories and pit-mound surveys before applying them to a

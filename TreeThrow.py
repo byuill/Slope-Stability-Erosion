@@ -20,8 +20,10 @@ hillslope (ridge -> channel) in which soil is moved by two processes:
    position, an age, a lifespan drawn from the species distribution and a
    mature root-plate (root wad) radius and depth.  The root plate grows with
    age toward its mature size.  When a tree reaches the end of its life it
-   dies; a species-specific fraction of deaths are by UPROOTING (the rest snap
-   or die standing and move no soil).  An uprooting event:
+   dies; a species-specific fraction of deaths are by UPROOTING.  Of the rest,
+   a species-specific share stand dead as SNAGS, which topple later and may
+   uproot a root plate that has decayed meanwhile; the others snap and move no
+   soil.  An uprooting event:
 
      * chooses a fall azimuth from a von Mises distribution whose mean and
        concentration combine a downslope bias (proportional to local gradient)
@@ -50,11 +52,15 @@ thrown over the divide is mirrored back, i.e. a symmetric divide); x = L is a
 channel whose elevation is fixed (or lowers at a set rate) and which removes
 any sediment delivered to it.  The lateral (y) boundaries are periodic.
 
-Four forest types are pre-parameterised (see SPECIES):  'pine',
+Nine forest types are pre-parameterised (see SPECIES).  The generic ones are 'pine',
 'deciduous', 'aspen' and 'spruce'.  The values are representative,
 literature-informed estimates intended as starting points; 'spruce' is
 calibrated to a Norway spruce pit-mound survey and 'deciduous' to published
 root-plate volumes and the southern-Indiana flux share of Doane et al. (2021).
+Five keystone presets span contrasting tree-throw dynamics: 'douglas_fir'
+(Gabet & Mudd 2010), 'oak' (Šamonil et al. 2017), 'lodgepole_pine' (Gallaway
+et al. 2009), 'ponderosa_pine' (Hoffman & Anderson 2013) and 'eastern_hemlock'
+(estimates).
 Calibrate against field data (stand inventories, pit-mound surveys) for any
 specific site.  validation/run_validation.py compares the model with the
 literature.
@@ -83,7 +89,7 @@ Run
 ---
     python TreeThrow.py --species pine --length 60 --width 30 --slope 0.4
     python TreeThrow.py --species aspen --slope-deg 20 --years 3000
-    python TreeThrow.py --compare --length 50 --width 20 --slope 0.35   # all four species
+    python TreeThrow.py --compare --length 50 --width 20 --slope 0.35   # all nine species
     python TreeThrow.py --list-species
 
 Outputs (per species) in --output (default ./tree_throw_output/<species>/):
@@ -149,6 +155,10 @@ class TreeSpecies:
     background_mortality: float = 0.0  # annual death probability at any age (competition, disease, ...)
     min_uproot_age: float = 0.0   # yr; younger trees snap or die standing instead of uprooting
     fresh_collapse_scale: float = 1.0  # multiplier on the fresh pit-mound collapse rate (soil/site dependent)
+    snag_fraction: float = 0.0    # share of deaths not uprooted at once that stand dead and topple later
+    snag_fall_rate: float = 0.1   # 1/yr; standing dead trees (and fire snags) topple at this rate
+    snag_uproot_fraction: Optional[float] = None  # P(uproot) when a snag topples (None = uproot_fraction)
+    wind_vulnerability: float = 1.0  # relative storm kill probability (shallow plates > 1, taproots < 1)
     size_depth_correlation: float = -0.6  # correlation of plate diameter and depth (log space)
 
     # ---- derived quantities ------------------------------------------------
@@ -156,6 +166,10 @@ class TreeSpecies:
     def uproot_rate_per_ha(self) -> float:
         """Steady-state uprooting events per hectare per year (no stand-replacing disturbance)."""
         return stand_rates(self)["uprootings_per_ha_yr"]
+
+    @property
+    def p_snag_uproot(self) -> float:
+        return self.uproot_fraction if self.snag_uproot_fraction is None else self.snag_uproot_fraction
 
     @property
     def death_rate_per_ha(self) -> float:
@@ -186,6 +200,10 @@ class TreeSpecies:
             "background_mortality": 0.0 <= self.background_mortality < 1.0,
             "min_uproot_age": self.min_uproot_age >= 0.0,
             "fresh_collapse_scale": self.fresh_collapse_scale >= 0.0,
+            "snag_fraction": 0.0 <= self.snag_fraction <= 1.0,
+            "snag_fall_rate": self.snag_fall_rate > 0.0,
+            "snag_uproot_fraction": self.snag_uproot_fraction is None or 0.0 <= self.snag_uproot_fraction <= 1.0,
+            "wind_vulnerability": self.wind_vulnerability >= 0.0,
             "size_depth_correlation": -1.0 < self.size_depth_correlation < 1.0,
         }
         bad = [k for k, ok in checks.items() if not ok]
@@ -282,6 +300,110 @@ SPECIES: Dict[str, TreeSpecies] = {
         background_mortality=0.02,                # Šamonil et al. 2017: ~2 %/yr of stems die in mountain reserves
         min_uproot_age=30.0,                      # thin trees uproot readily in the mountains (Šamonil et al. 2017)
     ),
+    # ---- Keystone species with contrasting tree-throw dynamics -------------------------------
+    "douglas_fir": TreeSpecies(
+        key="douglas_fir",
+        name="Douglas fir forest (Pseudotsuga menziesii), Pacific Northwest",
+        description=("Long-lived, massive conifer of the Oregon Coast Range. Most trees die "
+                     "standing and break or decay as snags; only ~15 % of deaths topple the "
+                     "root plate, and only in trees older than ~80 yr, but each throw moves "
+                     "~3 m^3 of soil and plucks fractured bedrock (Gabet & Mudd 2010). The "
+                     "reference forest for storm-driven windthrow flux (Constantine et al. 2012)."),
+        lifespan_mean=450.0, lifespan_sd=150.0,
+        density=430.0,                            # Gabet & Mudd 2010
+        uproot_fraction=0.13,
+        root_plate_diameter=2.9, root_plate_diameter_cv=0.25,   # pit 3 +/- 1.3 m^3; depth ~ radius / 2
+        root_plate_depth=0.8, root_plate_depth_cv=0.30,
+        maturity_age=120.0, dbh=70.0,
+        regeneration_delay=15.0,
+        background_mortality=0.002,               # -> overall mortality ~1/330 per yr (Gabet & Mudd 2010)
+        min_uproot_age=80.0,
+        snag_fraction=0.6, snag_fall_rate=0.03, snag_uproot_fraction=0.08,   # snags stand for decades, mostly snap
+        wind_vulnerability=1.0,
+    ),
+    "oak": TreeSpecies(
+        key="oak",
+        name="Oak forest (Quercus robur / petraea), lowland",
+        description=("Deep, heart-to-taproot system anchors the tree, so oaks seldom uproot "
+                     "alive and resist wind. Most die standing, become snags and fall "
+                     "decades later with decayed roots, so their pits are small and shallow. "
+                     "Calibrated to the Ranšpurk oak-ash reserve: 0.7 uprootings /ha/yr, 31 % "
+                     "of deaths, ~0.29 m^3 per event (Šamonil et al. 2017)."),
+        lifespan_mean=300.0, lifespan_sd=90.0,
+        density=280.0,                            # Ranšpurk: 281 stems >= 10 cm DBH /ha
+        uproot_fraction=0.15,
+        root_plate_diameter=1.6, root_plate_diameter_cv=0.25,
+        root_plate_depth=0.4, root_plate_depth_cv=0.30,
+        maturity_age=120.0, dbh=55.0,
+        regeneration_delay=5.0,
+        pit_aspect=1.3,
+        background_mortality=0.008,               # ~0.85 %/yr of stems die (Šamonil et al. 2017)
+        min_uproot_age=60.0,
+        fresh_collapse_scale=0.4,
+        snag_fraction=0.7, snag_fall_rate=0.08, snag_uproot_fraction=0.55,
+        wind_vulnerability=0.4,                   # taproot: low windthrow susceptibility
+    ),
+    "lodgepole_pine": TreeSpecies(
+        key="lodgepole_pine",
+        name="Lodgepole pine forest (Pinus contorta), Rocky Mountain subalpine",
+        description=("Dense, even-aged, fire-adapted stands of slender pines (DBH < 30 cm) with "
+                     "shallow lateral roots. Background tree throw moves little soil; a "
+                     "stand-replacing fire kills the stand at once and the snags topple in "
+                     "a pulse over the next 10-30 yr, raising flux ~11x (Gallaway et al. 2009)."),
+        lifespan_mean=150.0, lifespan_sd=40.0,
+        density=1000.0,
+        uproot_fraction=0.04,
+        root_plate_diameter=1.2, root_plate_diameter_cv=0.25,
+        root_plate_depth=0.3, root_plate_depth_cv=0.30,
+        maturity_age=50.0, dbh=22.0,
+        regeneration_delay=3.0,                   # serotinous cones: prompt regeneration after fire
+        background_mortality=0.004,
+        min_uproot_age=40.0,
+        snag_fraction=0.5, snag_fall_rate=0.08, snag_uproot_fraction=0.4,
+        wind_vulnerability=1.3,
+    ),
+    "ponderosa_pine": TreeSpecies(
+        key="ponderosa_pine",
+        name="Ponderosa pine woodland (Pinus ponderosa), Colorado Front Range",
+        description=("Open, park-like stands of large, long-lived pines with a deep taproot. "
+                     "Tree throw is rare and soil moves mainly by the slow root cycle of "
+                     "growth and decay (Hoffman & Anderson 2013); dead trees stand for "
+                     "decades and mostly snap."),
+        lifespan_mean=400.0, lifespan_sd=120.0,
+        density=120.0,
+        uproot_fraction=0.05,
+        root_plate_diameter=2.0, root_plate_diameter_cv=0.25,
+        root_plate_depth=0.55, root_plate_depth_cv=0.30,
+        maturity_age=120.0, dbh=55.0,
+        regeneration_delay=20.0,
+        background_mortality=0.002,
+        min_uproot_age=80.0,
+        snag_fraction=0.6, snag_fall_rate=0.04, snag_uproot_fraction=0.1,
+        wind_vulnerability=0.4,
+    ),
+    "eastern_hemlock": TreeSpecies(
+        key="eastern_hemlock",
+        name="Eastern hemlock forest (Tsuga canadensis), New England",
+        description=("Shade-tolerant, long-lived conifer with a broad, very shallow root plate "
+                     "on glacial till; highly wind-firm only in sheltered stands and readily "
+                     "windthrown when exposed. Hemlock woolly adelgid outbreaks kill trees "
+                     "standing; the snags then topple within one to two decades "
+                     "(use --disturbance outbreak). Parameter values are literature-informed "
+                     "estimates, not a site calibration."),
+        lifespan_mean=350.0, lifespan_sd=100.0,
+        density=400.0,
+        uproot_fraction=0.55,
+        root_plate_diameter=3.0, root_plate_diameter_cv=0.25,
+        root_plate_depth=0.55, root_plate_depth_cv=0.30,
+        maturity_age=120.0, dbh=50.0,
+        regeneration_delay=10.0,
+        pit_aspect=1.6,
+        background_mortality=0.004,
+        min_uproot_age=50.0,
+        fresh_collapse_scale=0.4,                 # Harvard Forest sandy-loam till (as for deciduous)
+        snag_fraction=0.5, snag_fall_rate=0.1, snag_uproot_fraction=0.5,
+        wind_vulnerability=1.6,
+    ),
 }
 
 
@@ -338,14 +460,14 @@ class HillslopeConfig:
     thin_soil_depth: float = 0.5       # m; root plates thin toward half depth on bare rock (Gabet & Mudd 2010); 0 = off
 
     # Stand-replacing / partial disturbances (off by default)
-    disturbance: str = "none"          # 'none', 'fire' or 'windstorm'
+    disturbance: str = "none"          # 'none', 'fire', 'windstorm' or 'outbreak' (insects / pathogens)
     disturbance_interval: float = 0.0  # yr, mean return interval (exponential); 0 = only `first_disturbance`
     first_disturbance: Optional[float] = None  # yr of the first event (default: random draw)
     disturbance_severity: float = 1.0  # fraction of standing trees killed (windstorm: size-weighted)
     storm_uproot_fraction: float = 0.8   # share of storm-killed trees that uproot (the rest snap)
     storm_size_exponent: float = 1.0     # storm kill probability grows as (plate radius / mean)^k
-    storm_min_age: float = 15.0        # yr; younger (shorter than ~5 m) trees are not storm-felled (Constantine 2012)
-    snag_fall_rate: float = 0.1        # 1/yr; fire-killed snags topple at this exponential rate
+    storm_min_age: float = 15.0        # yr; younger (shorter than ~5 m) trees are not storm-felled or attacked
+    snag_fall_rate: Optional[float] = None  # 1/yr; overrides the species' snag toppling rate (None = species)
     root_decay_time: float = 15.0      # yr; a dead tree's root-plate volume decays as exp(-t / tau)
 
     # Root growth-decay transport (Hoffman & Anderson 2013), added to the background diffusivity
@@ -386,11 +508,12 @@ class HillslopeConfig:
                              "(decay time positive).")
         if self.years <= 0 or self.dt <= 0:
             raise ValueError("years and dt must be positive.")
-        if self.disturbance not in ("none", "fire", "windstorm"):
-            raise ValueError("disturbance must be 'none', 'fire' or 'windstorm'.")
+        if self.disturbance not in ("none", "fire", "windstorm", "outbreak"):
+            raise ValueError("disturbance must be 'none', 'fire', 'windstorm' or 'outbreak'.")
         if not 0 <= self.disturbance_severity <= 1 or not 0 <= self.storm_uproot_fraction <= 1:
             raise ValueError("disturbance_severity and storm_uproot_fraction must be in [0, 1].")
-        if self.snag_fall_rate < 0 or self.root_decay_time <= 0 or self.disturbance_interval < 0:
+        if (self.snag_fall_rate is not None and self.snag_fall_rate < 0) or self.root_decay_time <= 0 \
+                or self.disturbance_interval < 0:
             raise ValueError("snag_fall_rate and disturbance_interval must be >= 0, root_decay_time > 0.")
         if not 0 < self.root_beta < 1:
             raise ValueError("root_beta must be in (0, 1).")
@@ -523,8 +646,14 @@ def stand_rates(sp: "TreeSpecies", n: int = 100_000) -> Dict[str, float]:
     _, a = draw_ages_at_death(rng, sp, n)
     deaths = sp.density / (float(a.mean()) + sp.regeneration_delay)
     eligible = float(np.mean(a >= sp.min_uproot_age))
-    return {"deaths_per_ha_yr": deaths, "uprootings_per_ha_yr": deaths * sp.uproot_fraction * eligible,
-            "uprooting_share_of_deaths": sp.uproot_fraction * eligible, "mean_age_at_death": float(a.mean())}
+    immediate = sp.uproot_fraction * eligible
+    via_snag = eligible * (1.0 - sp.uproot_fraction) * sp.snag_fraction * sp.p_snag_uproot
+    share = immediate + via_snag
+    snags_made = (1.0 - immediate) * sp.snag_fraction
+    return {"deaths_per_ha_yr": deaths, "uprootings_per_ha_yr": deaths * share,
+            "uprooting_share_of_deaths": share, "mean_age_at_death": float(a.mean()),
+            "snag_share_of_uprootings": via_snag / share if share > 0 else 0.0,
+            "standing_dead_per_ha": deaths * snags_made / sp.snag_fall_rate}
 
 
 def root_cycle_flux(slope_rad: float, root_biomass: float, turnover: float, root_density: float,
@@ -562,7 +691,8 @@ def draw_mature_sizes(rng: np.random.Generator, sp: TreeSpecies, n: int):
 def expected_tree_throw(sp: TreeSpecies, slope: float, infill_fraction: float = 0.3,
                         infill_critical_slope: float = 1.07,
                         n_samples: int = 200_000, seed: int = 0, soil_depth: Optional[float] = None,
-                        bedrock_pluck_fraction: float = 0.3, rock_to_soil_dilation: float = 2.0) -> Dict[str, float]:
+                        bedrock_pluck_fraction: float = 0.3, rock_to_soil_dilation: float = 2.0,
+                        root_decay_time: float = 15.0, snag_fall_rate: Optional[float] = None) -> Dict[str, float]:
     """Monte-Carlo expectation of tree-throw transport on an infinite planar slope.
 
     Assumes no wind bias and covers the uprooting event itself (not the later
@@ -579,6 +709,15 @@ def expected_tree_throw(sp: TreeSpecies, slope: float, infill_fraction: float = 
     n_samples = age_death.size
     r_m, h_m = draw_mature_sizes(rng, sp, n_samples)
     r, h = plate_at_age(sp, r_m, h_m, age_death)
+    # Uprootings of standing-dead trees: their root plates decay until the snag topples.
+    p_now = sp.uproot_fraction
+    p_snag = (1.0 - p_now) * sp.snag_fraction * sp.p_snag_uproot
+    if p_now + p_snag > 0 and p_snag > 0:
+        is_snag = rng.random(n_samples) < p_snag / (p_now + p_snag)
+        k_fall = sp.snag_fall_rate if snag_fall_rate is None else snag_fall_rate
+        shrink = np.exp(-rng.exponential(1.0 / k_fall, n_samples) / root_decay_time) ** (1.0 / 3.0)
+        f = np.where(is_snag, shrink, 1.0)
+        r, h = r * f, h * f
     n = sp.pit_shape_exponent
     if soil_depth is None:
         vol = pit_volume_factor(n) * np.pi * r * r * h
@@ -679,8 +818,8 @@ class TreeThrowModel:
         self.fresh_t0 = np.full((self.nx, self.ny), -np.inf)
         self.fresh_last = -np.inf
         # Standing dead trees (fire-killed), which topple later.
-        self.snags = {k: np.zeros(0) for k in ("x", "y", "R", "H", "t_death", "age_death")}
-        self.n_events_by_cause = {"background": 0, "windstorm": 0, "snag": 0}
+        self.snags = {k: np.zeros(0) for k in ("x", "y", "R", "H", "t_death", "age_death", "killed")}
+        self.n_events_by_cause = {"background": 0, "windstorm": 0, "snag": 0, "disturbance_snag": 0}
         self.disturbance_log: List[tuple] = []
         if config.disturbance != "none":
             if config.first_disturbance is not None:
@@ -1055,7 +1194,7 @@ class TreeThrowModel:
         """Uproot one tree and log the event."""
         phi = self._fall_direction(x, y, R)
         ev = self.uproot(x, y, R, H, phi)
-        code = {"background": 0, "windstorm": 1, "snag": 2}[cause]
+        code = {"background": 0, "windstorm": 1, "snag": 2, "disturbance_snag": 3}[cause]
         self.event_log.append((self.time, x, y, ev["R"], ev["H"], math.degrees(phi), ev["volume"],
                                ev["displaced"], ev["export"], code))
         self.n_events += 1
@@ -1079,24 +1218,37 @@ class TreeThrowModel:
             for k, a in zip(dead[throw], age_death[throw]):
                 R, H = plate_at_age(sp, self.R_mature[k], self.H_mature[k], a)
                 self._throw(self.tx[k], self.ty[k], R, H, "background")
+            if sp.snag_fraction > 0:
+                stand = ~throw & (self.rng.random(dead.size) < sp.snag_fraction)
+                if stand.any():
+                    k = dead[stand]
+                    R, H = plate_at_age(sp, self.R_mature[k], self.H_mature[k], age_death[stand])
+                    self._add_snags(self.tx[k], self.ty[k], R, H, age_death[stand])
             self._replace_trees(dead)
         return self.n_events - n0
 
+    def _add_snags(self, x, y, R, H, age_death, killed: bool = False) -> None:
+        n = np.size(x)
+        for key, val in (("x", x), ("y", y), ("R", R), ("H", H), ("t_death", np.full(n, self.time)),
+                         ("age_death", age_death), ("killed", np.full(n, float(killed)))):
+            self.snags[key] = np.concatenate([self.snags[key], np.asarray(val, float)])
+
     def _disturbance_step(self) -> None:
-        """Apply a fire or windstorm if one is due."""
+        """Apply a fire, windstorm or insect/pathogen outbreak if one is due."""
         cfg, sp = self.cfg, self.sp
         if self.time < self.next_disturbance:
             return
         self.next_disturbance = (self.time + float(self.rng.exponential(cfg.disturbance_interval))
                                  if cfg.disturbance_interval > 0 else math.inf)
-        live = np.flatnonzero(self.age >= (cfg.storm_min_age if cfg.disturbance == "windstorm" else 0.0))
+        live = np.flatnonzero(self.age >= (0.0 if cfg.disturbance == "fire" else cfg.storm_min_age))
         if live.size == 0:
             return
         R, H = plate_at_age(sp, self.R_mature[live], self.H_mature[live], self.age[live])
-        if cfg.disturbance == "windstorm":
-            # Wind loads scale with tree size, so larger trees are felled preferentially.
+        if cfg.disturbance in ("windstorm", "outbreak"):
+            # Wind loads, and bark-beetle / pathogen attack, both favour larger trees.
             w = (R / max(float(R.mean()), 1e-9)) ** cfg.storm_size_exponent
-            p = np.clip(cfg.disturbance_severity * w, 0.0, 1.0)
+            vuln = sp.wind_vulnerability if cfg.disturbance == "windstorm" else 1.0
+            p = np.clip(cfg.disturbance_severity * vuln * w, 0.0, 1.0)
         else:
             p = np.full(live.size, cfg.disturbance_severity)
         hit = self.rng.random(live.size) < p
@@ -1108,26 +1260,26 @@ class TreeThrowModel:
             for k, r, h in zip(killed[up], R[hit][up], H[hit][up]):
                 self._throw(self.tx[k], self.ty[k], r, h, "windstorm")
         else:
-            # Fire kills trees standing; they topple later as their roots decay.
-            for key, val in (("x", self.tx[killed]), ("y", self.ty[killed]), ("R", R[hit]), ("H", H[hit]),
-                             ("t_death", np.full(killed.size, self.time)), ("age_death", self.age[killed])):
-                self.snags[key] = np.concatenate([self.snags[key], val])
+            # Fire and outbreaks kill trees standing; they topple later as their roots decay.
+            self._add_snags(self.tx[killed], self.ty[killed], R[hit], H[hit], self.age[killed], killed=True)
         self.disturbance_log.append((self.time, cfg.disturbance, int(killed.size), int(live.size)))
         self._replace_trees(killed)
 
     def _snag_step(self, dt: float) -> None:
-        """Topple fire-killed snags; their root plates shrink with time since death."""
+        """Topple standing dead trees; their root plates shrink with time since death."""
         cfg, sp, sn = self.cfg, self.sp, self.snags
-        if sn["x"].size == 0 or cfg.snag_fall_rate <= 0:
+        rate = sp.snag_fall_rate if cfg.snag_fall_rate is None else cfg.snag_fall_rate
+        if sn["x"].size == 0 or rate <= 0:
             return
-        fall = self.rng.random(sn["x"].size) < 1.0 - math.exp(-cfg.snag_fall_rate * dt)
+        fall = self.rng.random(sn["x"].size) < 1.0 - math.exp(-rate * dt)
         if not fall.any():
             return
         idx = np.flatnonzero(fall)
-        up = (sn["age_death"][idx] >= sp.min_uproot_age) & (self.rng.random(idx.size) < sp.uproot_fraction)
+        up = (sn["age_death"][idx] >= sp.min_uproot_age) & (self.rng.random(idx.size) < sp.p_snag_uproot)
         for k in idx[up]:
             f = math.exp(-(self.time - sn["t_death"][k]) / cfg.root_decay_time) ** (1.0 / 3.0)
-            self._throw(sn["x"][k], sn["y"][k], sn["R"][k] * f, sn["H"][k] * f, "snag")
+            self._throw(sn["x"][k], sn["y"][k], sn["R"][k] * f, sn["H"][k] * f,
+                        "disturbance_snag" if sn["killed"][k] else "snag")
         keep = ~fall
         for key in sn:
             sn[key] = sn[key][keep]
@@ -1271,7 +1423,8 @@ class TreeThrowModel:
         expected = expected_tree_throw(self.sp, cfg.slope, cfg.infill_fraction, cfg.infill_critical_slope,
                                        soil_depth=cfg.initial_soil_depth if cfg.soil_model else None,
                                        bedrock_pluck_fraction=cfg.bedrock_pluck_fraction,
-                                       rock_to_soil_dilation=cfg.rock_to_soil_dilation)
+                                       rock_to_soil_dilation=cfg.rock_to_soil_dilation,
+                                       root_decay_time=cfg.root_decay_time, snag_fall_rate=cfg.snag_fall_rate)
         ev = np.array(self.event_log) if self.event_log else np.zeros((0, 10))
         prof0, prof1 = self.z_initial.mean(axis=1), self.z.mean(axis=1)
         return {
@@ -1319,7 +1472,7 @@ class TreeThrowModel:
             w = csv.writer(fh)
             w.writerow(["time_yr", "x_m", "y_m", "root_plate_radius_m", "root_plate_depth_m",
                         "fall_azimuth_deg", "excavated_m3", "displaced_m3", "exported_m3",
-                        "cause (0 background, 1 windstorm, 2 snag fall)"])
+                        "cause (0 background, 1 windstorm, 2 snag fall, 3 fall of a disturbance-killed snag)"])
             w.writerows([[f"{v:.6g}" for v in row] for row in self.event_log])
         with open(outdir / "summary.json", "w", encoding="utf-8") as fh:
             json.dump(self.summary(), fh, indent=2)
@@ -1442,9 +1595,15 @@ def draw_run_figure(model: TreeThrowModel, fig) -> None:
         ax2.set_ylabel("mean soil depth (m)", color="tab:orange")
 
 
+SPECIES_COLORS = {"pine": "tab:green", "deciduous": "tab:orange", "aspen": "tab:olive", "spruce": "tab:blue",
+                  "douglas_fir": "tab:cyan", "oak": "tab:brown", "lodgepole_pine": "tab:red",
+                  "ponderosa_pine": "tab:pink", "eastern_hemlock": "tab:purple"}
+
+
 def plot_comparison(models: List[TreeThrowModel], path: Path) -> None:
     plt = _import_pyplot()
-    colors = {"pine": "tab:green", "deciduous": "tab:orange", "aspen": "tab:olive", "spruce": "tab:blue"}
+    spare = iter(["tab:gray", "gold", "navy", "lime", "maroon", "teal", "k"] * 10)
+    colors = {m.sp.key: SPECIES_COLORS.get(m.sp.key) or next(spare) for m in models}
     fig, axes = plt.subplots(2, 3, figsize=(15, 9))
     fig.suptitle("Tree-throw landscape evolution: species comparison", fontsize=13)
 
@@ -1484,7 +1643,9 @@ def plot_comparison(models: List[TreeThrowModel], path: Path) -> None:
     ax.bar(xs + 0.2, [s["expected_D_tree_throw_m2_yr"] * 1e4 for s in sims], 0.4,
            label="analytic D_tt", color="lightgray", edgecolor="k")
     ax.axhline(models[0].cfg.diffusivity * 1e4, color="tab:brown", ls=":", label="background D")
-    ax.set_xticks(xs, keys)
+    ax.set_xticks(xs, keys, rotation=45 if len(keys) > 4 else 0, ha="right" if len(keys) > 4 else "center",
+                  fontsize=8 if len(keys) > 4 else None)
+    ax.set_yscale("log" if len(keys) > 4 else "linear")
     ax.set(title="Tree-throw diffusivity", ylabel="D (cm²/yr)")
     ax.legend(fontsize=8)
     fig.tight_layout()
@@ -1573,11 +1734,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="add soil transport by root growth and decay (Hoffman & Anderson 2013)")
 
     g = p.add_argument_group("disturbance")
-    g.add_argument("--disturbance", default="none", choices=["none", "fire", "windstorm"])
+    g.add_argument("--disturbance", default="none", choices=["none", "fire", "windstorm", "outbreak"])
     g.add_argument("--disturbance-interval", type=float, default=0.0, help="mean return interval (yr)")
     g.add_argument("--first-disturbance", type=float, help="year of the first disturbance")
     g.add_argument("--disturbance-severity", type=float, default=1.0, help="fraction of trees killed")
-    g.add_argument("--snag-fall-rate", type=float, default=0.1, help="fire-killed snag toppling rate (1/yr)")
+    g.add_argument("--snag-fall-rate", type=float, default=None,
+                   help="snag toppling rate (1/yr); default: the species value")
 
     g = p.add_argument_group("output")
     g.add_argument("--output", default="tree_throw_output", help="output directory")

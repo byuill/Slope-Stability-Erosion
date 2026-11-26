@@ -58,6 +58,10 @@ HOFFMAN = {
     "citation": "Hoffman BSS, Anderson RS (2013) Earth Surf. Process. Landforms, doi:10.1002/esp.3470",
     "mound_height_cm": (12.2, 6.1), "mound_width_cm": (93.3, 30.7),
 }
+# Keystone presets compared with each source's own forest type.
+GALLAWAY_SPECIES = "lodgepole_pine"      # Canadian Rockies lodgepole pine
+CONSTANTINE_SPECIES = "douglas_fir"      # Oregon Coast Range Douglas fir (also Gabet & Mudd 2010)
+SAMONIL_OAK_SITE = "Ranspurk (lowland floodplain, oak-ash)"
 HARVARD = {
     "citation": "Harvard Forest Data Archive HF320-03, hf320-03-microtopo.csv (2016)",
     "relief_median_cm": 50.0, "relief_mean_cm": 56.266, "relief_max_cm": 238.0, "n": 1763 - 1134,
@@ -78,9 +82,10 @@ def _within(x, lo, hi, tol=0.0):
 
 
 def run_steep_pine(seed):
+    """Lodgepole stand on Gallaway's steepest plots, no fire."""
     cfg = tt.HillslopeConfig(length=40, width=40, slope=0.5, dx=0.25, years=3000, seed=seed, n_snapshots=2,
                              record_interval=100)
-    m = tt.TreeThrowModel(tt.SPECIES["pine"], cfg)
+    m = tt.TreeThrowModel(tt.SPECIES[GALLAWAY_SPECIES], cfg)
     m.run(progress=False)
     s = m.summary()
     return {"q_tt": s["mean_flux_tree_throw_total_m2_yr"], "q_d": s["mean_flux_diffusion_m2_yr"],
@@ -88,32 +93,33 @@ def run_steep_pine(seed):
 
 
 def run_fire(seed, t_fire=300.0, years=520):
-    """Pine stand burned once (all trees killed); snags topple over the following decades."""
+    """Lodgepole stand burned once (all trees killed); snags topple over the following decades."""
     cfg = tt.HillslopeConfig(length=60, width=60, slope=0.5, dx=0.25, years=years, seed=seed, n_snapshots=2,
                              record_interval=1.0, disturbance="fire", first_disturbance=t_fire,
                              disturbance_severity=1.0)
-    m = tt.TreeThrowModel(tt.SPECIES["pine"], cfg)
+    m = tt.TreeThrowModel(tt.SPECIES[GALLAWAY_SPECIES], cfg)
     m.run(progress=False)
     t = np.array(m.record.time)
     mom = np.diff(np.array(m.record.moment_tt) + np.array(m.record.moment_fresh), prepend=0.0)
     ev = np.array(m.event_log)
     bins = np.arange(0, years + 1)
     counts = np.histogram(ev[:, 0], bins=bins)[0] if len(ev) else np.zeros(years)
-    living = np.histogram(ev[ev[:, 9] == 0, 0], bins=bins)[0] if len(ev) else np.zeros(years)
+    # Every uprooting except the falls of fire-killed snags (background snags of the regrown stand count).
+    living = np.histogram(ev[ev[:, 9] != 3, 0], bins=bins)[0] if len(ev) else np.zeros(years)
     area = m.L_active * m.W
     return {"t": t.tolist(), "flux": (mom / area).tolist(), "events": counts.tolist(),
             "events_living": living.tolist(), "t_fire": t_fire, "area_ha": area / 1e4}
 
 
 def run_storm(args):
-    """Pine stand with an annual storm of given severity (size-selective windthrow)."""
+    """Douglas-fir stand with an annual storm of given severity (size-selective windthrow)."""
     severity, seed = args
     cfg = tt.HillslopeConfig(length=60, width=60, slope=math.tan(math.radians(15)), dx=0.5, years=1500,
                              seed=seed, n_snapshots=2, record_interval=100, soil_model=False,
                              disturbance="windstorm" if severity > 0 else "none", disturbance_interval=1.0,
                              first_disturbance=1.0 if severity > 0 else None, disturbance_severity=severity,
                              storm_uproot_fraction=0.8, storm_size_exponent=2.0)
-    m = tt.TreeThrowModel(tt.SPECIES["pine"], cfg)
+    m = tt.TreeThrowModel(tt.SPECIES[CONSTANTINE_SPECIES], cfg)
     m.run(progress=False)
     s = m.summary()
     ev = np.array(m.event_log)
@@ -177,7 +183,8 @@ def _species(res_species, key):
 def test_samonil(res_species):
     out = {}
     sites = SAMONIL["sites"]
-    groups = {"spruce": [k for k in sites if "mountain" in k], "deciduous": [k for k in sites if "mountain" not in k]}
+    groups = {"spruce": [k for k in sites if "mountain" in k], "deciduous": [k for k in sites if "mountain" not in k],
+              "oak": [SAMONIL_OAK_SITE]}
     for key, names in groups.items():
         rs = _species(res_species, key)
         rate = float(np.mean([r["summary"]["uprooting_rate_per_ha_yr"] for r in rs]))
@@ -230,11 +237,13 @@ def p_downhill(slope_deg, bias):
 
 def test_gabet_mudd(res_species, v6):
     ang = np.arange(0, 46, 5.0)
-    model = np.array([p_downhill(a, tt.SPECIES["pine"].fall_slope_bias) for a in ang])
+    fir = tt.SPECIES[CONSTANTINE_SPECIES]
+    model = np.array([p_downhill(a, fir.fall_slope_bias) for a in ang])
     rule = 0.5 + 0.4 * ang / 45.0
-    pine = _species(res_species, "pine")
-    exc = float(np.mean(np.concatenate([np.array(r["excavated_volume"]) for r in pine])))
-    share = float(np.mean([r["summary"]["uprooting_share_of_deaths"] for r in pine]))
+    rs = _species(res_species, CONSTANTINE_SPECIES)
+    exc = float(np.mean(np.concatenate([np.array(r["excavated_volume"]) for r in rs])))
+    share = float(np.mean([r["summary"]["uprooting_share_of_deaths"] for r in rs]))
+    deaths = float(np.mean([r["summary"]["death_rate_per_ha_yr"] for r in rs]))
     m0, s0 = GABET_MUDD["pit_volume"]
     t5 = v6["runs"]["D=0.001"]["time_to_5cm_yr"]
     ratios = {k: tt.SPECIES[k].root_plate_depth / (0.5 * tt.SPECIES[k].root_plate_diameter) for k in tt.SPECIES}
@@ -242,8 +251,11 @@ def test_gabet_mudd(res_species, v6):
         "angles_deg": ang.tolist(), "p_downhill_model": model.tolist(), "p_downhill_rule": rule.tolist(),
         "max_abs_diff": float(np.abs(model - rule).max()),
         "verdict_fall": _verdict(np.abs(model - rule).max() <= 0.1, partial=np.abs(model - rule).max() <= 0.2),
-        "pine_topple_share": share, "verdict_topple_share": _verdict(abs(share - 0.15) <= 0.03),
-        "pine_pit_volume": exc, "verdict_pit_volume": _verdict(abs(exc - m0) <= s0, partial=abs(exc - m0) <= 2 * s0),
+        "fir_topple_share": share, "verdict_topple_share": _verdict(abs(share - 0.15) <= 0.03),
+        "fir_mortality": deaths / fir.density,
+        "verdict_mortality": _verdict(abs(deaths / fir.density * 330 - 1) <= 0.2,
+                                      partial=abs(deaths / fir.density * 330 - 1) <= 0.5),
+        "fir_pit_volume": exc, "verdict_pit_volume": _verdict(abs(exc - m0) <= s0, partial=abs(exc - m0) <= 2 * s0),
         "depth_to_radius": ratios,
         "mound_time_to_5cm_yr": t5,
         "verdict_mound_age": _verdict(t5 is not None and GABET_MUDD["mound_age_michigan_yr"] / 2 <= t5
@@ -261,7 +273,7 @@ def test_constantine(res_species, storms):
     eff_c = (2 / math.pi) * (1.5 * r) * math.cos(th)               # k / (rate * V), m
     out = {"V_present_m3": V, "r_m": r, "efficiency_constantine_m": eff_c,
            "k_present_m2_yr": CONSTANTINE["rate_present"] / 1e4 * V * eff_c}
-    for key in ("pine", "deciduous", "spruce"):
+    for key in ("pine", "deciduous", "spruce", CONSTANTINE_SPECIES):
         rs = _species(res_species, key)
         D = float(np.mean([x["summary"]["effective_D_tree_throw_m2_yr"] for x in rs]))
         rate = float(np.mean([x["summary"]["uprooting_rate_per_ha_yr"] for x in rs]))
@@ -303,8 +315,8 @@ def test_gallaway(steep, fire):
     q_post_fire = float(flux[post].mean())
     yrs = np.arange(ev.size)
     rate = ev / area_ha
-    # Second pulse: uprootings of trees that die in the regrown stand (snag falls excluded) recover to
-    # half the pre-fire rate.
+    # Second pulse: uprootings of trees that die in the regrown stand (falls of fire-killed snags excluded)
+    # recover to half the pre-fire rate.
     pre_rate = float(rate[(yrs > tf - 200) & (yrs <= tf)].mean())
     living = np.mean([np.array(f["events_living"]) for f in fire], axis=0) / area_ha
     smooth = np.convolve(living, np.ones(10) / 10, mode="same")
@@ -343,7 +355,13 @@ def test_hoffman(res_species):
     dec = _species(res_species, "deciduous")
     D_tt = float(np.mean([r["summary"]["effective_D_tree_throw_total_m2_yr"] for r in dec]))
     curves = {str(zA): [tt.root_cycle_flux(th, *a, b, zA) for b in betas] for zA in (0.1, 0.3, 1.0)}
+    pp = _species(res_species, "ponderosa_pine")
+    D_pp = float(np.mean([r["summary"]["effective_D_tree_throw_total_m2_yr"] for r in pp])) if pp else float("nan")
+    # Hoffman & Anderson's Front Range ponderosa woodland: tree throw is rare, so root cycling should match
+    # or exceed it (all roots, beta 0.95).
     return {"checks": checks, "verdict_formula": _verdict(ok), "D_root": {str(k): v for k, v in D_root.items()},
+            "D_tt_ponderosa": D_pp, "ponderosa_tt_over_root": D_pp / D_root[None],
+            "verdict_ponderosa_root_dominated": _verdict(D_pp / D_root[None] <= 1.0, partial=D_pp / D_root[None] <= 2.0),
             "D_tt_deciduous": D_tt, "tt_over_root_all_roots": D_tt / D_root[None],
             "tt_over_root_zA0.2": D_tt / D_root[0.2], "betas": betas.tolist(), "curves": curves}
 
@@ -432,7 +450,8 @@ def plot(res, path):
     a = ax[0, 2]
     C = res["C_constantine"]
     rows = C["storm_rows"]
-    a.plot([r["rate"] for r in rows], [r["k"] * 1e3 for r in rows], "o-", color="tab:green", label="model k (pine, 15°)")
+    a.plot([r["rate"] for r in rows], [r["k"] * 1e3 for r in rows], "o-", color="tab:green",
+           label="model k (Douglas fir, 15°)")
     a2 = a.twinx()
     a2.plot([r["rate"] for r in rows], [r["mean_volume"] for r in rows], "s--", color="tab:brown",
             label="mean root-plate volume")
@@ -455,7 +474,8 @@ def plot(res, path):
     a.axvline(GALLAWAY["second_pulse_yr"], color="k", ls=":", label="Gallaway: second pulse ~50 yr")
     a.axhline(L["pre_rate"], color="gray", ls="--", label="pre-fire rate")
     a.set_yscale("symlog", linthresh=0.1)
-    a.set(title="Pine stand burned at t = 0 (snags topple at 0.1 /yr)", xlabel="years since fire",
+    a.set(title=f"Lodgepole stand burned at t = 0 (snags topple at {tt.SPECIES[GALLAWAY_SPECIES].snag_fall_rate:g} /yr)",
+          xlabel="years since fire",
           ylabel="uprootings (/ha/yr, 5-yr mean)", xlim=(-100, 220))
     a.legend(fontsize=8)
 
@@ -487,7 +507,7 @@ def scorecard_rows(res):
     S, G, C, L, H, HF = (res[k] for k in ("S_samonil", "G_gabet_mudd", "C_constantine", "L_gallaway",
                                            "H_hoffman", "HF_harvard"))
     rows = []
-    for key, lab in (("deciduous", "lowland/highland"), ("spruce", "mountain")):
+    for key, lab in (("deciduous", "lowland/highland"), ("spruce", "mountain"), ("oak", "Ranšpurk oak-ash")):
         r = S[key]
         rows += [
             f"| S1 uprooting rate, {key} | {r['rate_obs'][0]:.1f}–{r['rate_obs'][1]:.1f} /ha/yr (Šamonil {lab}) | "
@@ -506,13 +526,15 @@ def scorecard_rows(res):
     rows += [
         f"| G1 fall direction vs. Gabet & Mudd rule (0–45°) | 50 % → 90 % downhill | max difference "
         f"{100 * G['max_abs_diff']:.0f} % | {G['verdict_fall']} |",
-        f"| G2 pine topple share of deaths (calibrated) | 15 % (Douglas fir) | {100 * G['pine_topple_share']:.0f} % | "
+        f"| G2 douglas_fir topple share of deaths | 15 % | {100 * G['fir_topple_share']:.0f} % | "
         f"{G['verdict_topple_share']} |",
-        f"| G3 pine pit volume | 3.0 ± 1.3 m³ (Douglas fir) | {G['pine_pit_volume']:.1f} m³ | {G['verdict_pit_volume']} |",
+        f"| G3 douglas_fir pit volume | 3.0 ± 1.3 m³ | {G['fir_pit_volume']:.1f} m³ | {G['verdict_pit_volume']} |",
+        f"| G5 douglas_fir annual mortality | 1/330 = 0.30 % | {100 * G['fir_mortality']:.2f} % | "
+        f"{G['verdict_mortality']} |",
         f"| G4 mound lifetime (to < 5 cm, D = 0.001) | oldest recognisable mound 2420 yr (Michigan) | "
         f"{G['mound_time_to_5cm_yr']:.0f} yr | {G['verdict_mound_age']} |",
     ]
-    for key in ("pine", "deciduous", "spruce"):
+    for key in ("pine", "deciduous", "spruce", CONSTANTINE_SPECIES):
         r = C[key]
         rows.append(f"| C1 transport per event, {key}: k / (rate × V) | {C['efficiency_constantine_m']:.2f} m "
                     f"(Constantine/Gabet 2003, S = 0.35) | {r['efficiency_m']:.2f} m | {r['verdict']} |")
@@ -522,13 +544,15 @@ def scorecard_rows(res):
         f"{C['storm_rows'][0]['mean_volume']:.1f} → {C['storm_rows'][-1]['mean_volume']:.1f} m³ | {C['verdict_volume_declines']} |",
         f"| C3 tree-throw flux peaks, then declines, as windthrow rate rises | peak near 8 /ha/yr, k ≈ 3.5 m²/kyr | "
         f"peak at {C['storm_peak_rate']:.1f} /ha/yr, k = {C['storm_peak_k'] * 1e3:.1f} m²/kyr | {C['verdict_flux_saturates']} |",
-        f"| L1 pine flux on steep slopes, no fire | {L['q_prefire_obs']:.1e} m²/yr (Gallaway, steepest plots) | "
+        f"| L1 lodgepole_pine flux on steep slopes, no fire | {L['q_prefire_obs']:.1e} m²/yr (Gallaway, steepest plots) | "
         f"{L['q_steep_model']:.1e} m²/yr (×{L['ratio_prefire']:.0f}) | {L['verdict_prefire']} |",
         f"| L2 post-fire / pre-fire flux (first 5 yr) | {L['post_over_pre_obs']:.0f}× | "
         f"{L['post_over_pre_model']:.0f}× | {L['verdict_post_over_pre']} |",
         f"| L3 second uprooting pulse after fire | ~50 yr | {t2} | {L['verdict_second_pulse']} |",
         f"| H1 root-cycle flux formula reproduces Hoffman & Anderson | 4 published values | "
         f"{H['checks']['q_zA1_beta0.98'] * 1e4:.2f}×10⁻⁴ at β 0.98 … | {H['verdict_formula']} |",
+        f"| H2 ponderosa_pine: tree throw no larger than root cycling (Front Range) | D_tt / D_root ≤ 1 | "
+        f"{H['ponderosa_tt_over_root']:.2f} | {H['verdict_ponderosa_root_dominated']} |",
         f"| HF1 pit-to-mound relief, median, couplets < 150 yr old | 50 cm (Harvard Forest, n = {HARVARD['n']}) | "
         f"{HF['median_young_cm']:.0f} cm | {HF['verdict_median_young']} |",
         f"| HF2 pit-to-mound relief, median, all couplets > 5 cm (steady state) | 50 cm | {HF['median_cm']:.0f} cm | "
@@ -543,7 +567,8 @@ def detail_lines(res):
     out = ["### S — Šamonil et al. (2017), four Czech old-growth reserves (primary data)\n",
            f"Source: {SAMONIL['citation']}. Table 2 rates per site; mortality per stem is deaths/ha/yr divided "
            "by living stems ≥ 10 cm DBH (Table 1). The model's deciduous stand is compared with the lowland "
-           "(oak-ash) and highland (beech) reserves, spruce with the two mountain reserves. Pit-mound area per "
+           "(oak-ash) and highland (beech) reserves, spruce with the two mountain reserves, and the oak keystone "
+           "preset with Ranšpurk alone. Pit-mound area per "
            "event in the model is the pit plus mound ellipse (≈ 2πR²).\n",
            "| site | slope (°) | stems/ha | uprooted /ha/yr | broken /ha/yr | share | area m²/ha/yr | volume m³/ha/yr |",
            "|---|---|---|---|---|---|---|---|"]
@@ -557,8 +582,9 @@ def detail_lines(res):
     out.append(f"Source: {GABET_MUDD['citation']}. Douglas-fir model parameters: annual mortality 1/330; topples "
                "15 % of deaths, only trees > 80 yr; pit volume 3 ± 1.3 m³ (half-ellipsoid, depth ≈ radius/2); "
                "P(downhill) 50 → 90 % from 0 to 45°; soil creep D = 2.5×10⁻³ m²/yr; oldest recognisable "
-               "Michigan mound 2420 yr (Schaetzl & Follmer 1990). The model adopts the pine mortality, topple share "
-               "and minimum topple age, and the thin-soil root-plate thinning (depth falls to half on bare rock).\n")
+               "Michigan mound 2420 yr (Schaetzl & Follmer 1990). The douglas_fir preset is calibrated to the mortality, "
+               "topple share (immediate uprooting plus the few snags that later uproot), minimum topple age and pit "
+               "volume; the thin-soil root-plate thinning (depth falls to half on bare rock) applies to all species.\n")
     out.append("Root-plate depth / radius in the model: " +
                ", ".join(f"{k} {v:.2f}" for k, v in G["depth_to_radius"].items()) +
                " (Gabet & Mudd and Constantine: ≈ 0.5 for Douglas fir).\n")
@@ -577,10 +603,10 @@ def detail_lines(res):
     out.append("### L — Gallaway et al. (2009), Canadian Rockies (abstract and introduction only)\n")
     out.append(f"Source: {GALLAWAY['citation']}. Root-throw transport on the steepest plots: 0.016 cm³/cm/yr "
                "before the 2003 fire and 0.18 cm³/cm/yr after it; fire-killed trees topple at an exponential rate, "
-               "and a second pulse of root throw begins ~50 yr after fire. The model's pine preset is compared at "
-               "S = 0.5; the fire scenario kills the whole stand once and lets snags fall at 0.1 /yr with root "
-               "plates decaying over 15 yr. The second pulse in the model is set by the 80-yr minimum topple age "
-               "(Gabet & Mudd), later than Gallaway's ~50 yr.\n")
+               "and a second pulse of root throw begins ~50 yr after fire. The model's lodgepole_pine preset is compared "
+               "at S = 0.5; the fire scenario kills the whole stand once and lets snags fall at the species rate "
+               f"({tt.SPECIES[GALLAWAY_SPECIES].snag_fall_rate:g} /yr) with root plates decaying over 15 yr. The "
+               "second pulse is set by the regrown stand reaching the 40-yr minimum uprooting age.\n")
     out.append("### H — Hoffman & Anderson (2013), Boulder Creek CZO\n")
     ch = H["checks"]
     out.append(f"Source: {HOFFMAN['citation']}. Root-cycle flux (Gale & Grigal profile, A-horizon roots only), "
@@ -589,7 +615,9 @@ def detail_lines(res):
                f"{ch['q_zA1_beta0.98']:.2e} (≈ 3.8×10⁻⁴); β 0.8 {ch['q_zA1_beta0.80']:.2e} (< 6×10⁻⁵); full profile / "
                f"median-depth formula {ch['full_over_median']:.2f} (≈ 40 % larger). Root-cycle diffusivity at β 0.95: "
                + ", ".join(f"A horizon {k} m {v:.1e}" for k, v in H["D_root"].items()) +
-               f" m²/yr. Model deciduous tree-throw diffusivity {H['D_tt_deciduous']:.1e} m²/yr is "
+               f" m²/yr. The ponderosa_pine preset (open Front Range woodland, deep taproot) has a tree-throw "
+               f"diffusivity of {H['D_tt_ponderosa']:.1e} m²/yr, {H['ponderosa_tt_over_root']:.2f}× root cycling. "
+               f"Model deciduous tree-throw diffusivity {H['D_tt_deciduous']:.1e} m²/yr is "
                f"{H['tt_over_root_all_roots']:.2f}× the all-roots root-cycle value (Gabet et al. 2003, via Hoffman: "
                "tree throw ≈ 4× root cycling). Root cycling is an optional model process (`root_cycle`), off by "
                "default because the default background diffusivity already lumps it with other creep.\n")

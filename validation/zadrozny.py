@@ -213,7 +213,6 @@ def plot(res, path):
     plt = tt._import_pyplot()
     fig, ax = plt.subplots(1, 3, figsize=(16, 5))
     fig.suptitle("Validation against Zadrożny et al. (2017) — uprooted Norway spruce, Babia Góra", fontsize=12)
-    colors = {"spruce": "tab:blue", "pine": "tab:green", "deciduous": "tab:orange"}
 
     # Z1 geometry at 1 yr
     a = ax[0]
@@ -226,7 +225,7 @@ def plot(res, path):
     for i, k in enumerate(("spruce", "pine", "deciduous")):
         r = g[k]
         a.bar(x - 0.1 + 0.2 * i, [r["length_1yr_m"], r["width_1yr_m"], r["depth_1yr_m"]], 0.2,
-              color=colors[k], label=f"model {k}, 1 yr")
+              color=tt.SPECIES_COLORS.get(k, "tab:gray"), label=f"model {k}, 1 yr")
     a.set_xticks(x, labels)
     a.set(title="Z1  Pit size one year after uprooting", ylabel="m")
     a.legend(fontsize=8)
@@ -235,7 +234,7 @@ def plot(res, path):
     a = ax[1]
     z2 = res["Z2_size_depth"]
     for k in ("spruce", "pine", "deciduous"):
-        a.scatter(z2[k]["sample_diam"], z2[k]["sample_depth"], s=4, alpha=0.3, color=colors[k],
+        a.scatter(z2[k]["sample_diam"], z2[k]["sample_depth"], s=4, alpha=0.3, color=tt.SPECIES_COLORS.get(k, "tab:gray"),
                   label=f"model {k} (r = {z2[k]['r_model']:+.2f})")
     f3 = ZADROZNY["fig3"]
     xx = np.linspace(*f3["x_range_m"], 10)

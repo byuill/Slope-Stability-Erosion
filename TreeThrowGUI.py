@@ -72,6 +72,15 @@ FOREST = [
         ("sp", "min_uproot_age", "Minimum uprooting age (yr)", "float", "Younger trees snap instead (Gabet & Mudd 2010: 80 yr)."),
         ("sp", "fall_slope_bias", "Downslope fall bias", "float",
          "von Mises concentration per unit gradient; 2 reproduces Gabet & Mudd's 50 % -> 90 % downhill rule."),
+        ("sp", "wind_vulnerability", "Wind vulnerability", "float",
+         "Relative storm kill probability: shallow plates > 1 (hemlock 1.6), taproots < 1 (oak 0.4)."),
+    ]),
+    ("Standing dead (snags)", [
+        ("sp", "snag_fraction", "Snag fraction", "float",
+         "Share of deaths not uprooted at once that stand dead and topple later (Douglas fir, oak: 0.6-0.7)."),
+        ("sp", "snag_fall_rate", "Snag fall rate (/yr)", "float", "Standing dead trees topple at this rate."),
+        ("sp", "snag_uproot_fraction", "P(uproot | snag falls)", "optfloat",
+         "Blank = same as P(uproot). Root plates have decayed by the time the snag falls."),
     ]),
     ("Root plate and pit", [
         ("sp", "root_plate_diameter", "Root-plate diameter (m)", "float", "Mature equivalent diameter sqrt(length x width)."),
@@ -137,18 +146,21 @@ PROCESSES = [
 ]
 DISTURBANCE = [
     ("Regime", [
-        ("cfg", "disturbance", "Disturbance type", ("none", "fire", "windstorm"), ""),
+        ("cfg", "disturbance", "Disturbance type", ("none", "fire", "windstorm", "outbreak"),
+         "Outbreak = insects or pathogens (e.g. hemlock woolly adelgid): kills large trees standing."),
         ("cfg", "first_disturbance", "First event (yr)", "optfloat", "Blank = random draw from the interval."),
         ("cfg", "disturbance_interval", "Mean return interval (yr)", "float", "0 = only the first event."),
-        ("cfg", "disturbance_severity", "Severity (fraction killed)", "float", "Windstorms weight this by tree size."),
+        ("cfg", "disturbance_severity", "Severity (fraction killed)", "float",
+         "Windstorms and outbreaks weight this by tree size; storms also by the species' wind vulnerability."),
     ]),
     ("Windstorm", [
         ("cfg", "storm_uproot_fraction", "Storm uprooting share", "float", "Share of storm-felled trees that uproot."),
         ("cfg", "storm_size_exponent", "Size selectivity", "float", "Kill probability ~ (plate size / mean)^k (Constantine 2012)."),
         ("cfg", "storm_min_age", "Minimum storm age (yr)", "float", "Younger (< ~5 m tall) trees are not felled."),
     ]),
-    ("Fire", [
-        ("cfg", "snag_fall_rate", "Snag fall rate (/yr)", "float", "Fire-killed trees topple at this rate (Gallaway 2009)."),
+    ("Fire and outbreak snags", [
+        ("cfg", "snag_fall_rate", "Snag fall rate override (/yr)", "optfloat",
+         "Blank = the species' snag fall rate (Gallaway 2009: fire-killed lodgepole ~0.08)."),
         ("cfg", "root_decay_time", "Root decay time (yr)", "float", "Root-plate volume of a dead tree decays as exp(-t / tau)."),
     ]),
 ]
@@ -599,10 +611,14 @@ class TreeThrowApp(tk.Tk):
             slope = self._parse("cfg", "slope")
             r = tt.stand_rates(sp)
             e = tt.expected_tree_throw(sp, slope, self._parse("cfg", "infill_fraction"),
-                                       self._parse("cfg", "infill_critical_slope"), n_samples=20000)
+                                       self._parse("cfg", "infill_critical_slope"), n_samples=20000,
+                                       root_decay_time=self._parse("cfg", "root_decay_time"),
+                                       snag_fall_rate=self._parse("cfg", "snag_fall_rate"))
             txt = (f"Deaths            {r['deaths_per_ha_yr']:7.2f} /ha/yr\n"
                    f"Uprooting share   {100 * r['uprooting_share_of_deaths']:7.0f} % of deaths\n"
                    f"Uprootings        {r['uprootings_per_ha_yr']:7.2f} /ha/yr\n"
+                   f"  of which snags  {100 * r['snag_share_of_uprootings']:7.0f} %\n"
+                   f"Standing dead     {r['standing_dead_per_ha']:7.0f} /ha\n"
                    f"Mean age at death {r['mean_age_at_death']:7.0f} yr\n"
                    f"Excavated volume  {e['mean_event_volume_m3']:7.2f} m³ per event\n"
                    f"Displaced volume  {e['mean_displaced_volume_m3']:7.2f} m³ per event\n"
@@ -863,7 +879,7 @@ class TreeThrowApp(tk.Tk):
             "mortality, uprooting rate and expected tree-throw diffusivity they imply.\n"
             "2. Set the hillslope size, slope and run length (Hillslope tab); the 'Run size' box estimates "
             "the run time.\n"
-            "3. Optionally add a fire or windstorm regime (Disturbance tab).\n"
+            "3. Optionally add a fire, windstorm or insect-outbreak regime (Disturbance tab).\n"
             "4. Press Run.  The Retro view plays the simulated hillslope as a 1980s pixel animation; Results "
             "shows the scientific figure and Summary the key numbers.\n"
             "5. File menu: save results, the GIF animation or a frame; load or save custom species."))

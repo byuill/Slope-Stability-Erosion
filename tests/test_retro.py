@@ -105,6 +105,19 @@ class DisturbanceFrameTests(unittest.TestCase):
         reds = (rgb == tr.EGA[tr.RED]).all(axis=2).sum()
         self.assertGreater(reds, 2000)                             # red sky
 
+    def test_outbreak_is_tagged_and_leaves_snags(self):
+        model, frames, meta = tr.run_with_frames(
+            tt.SPECIES["eastern_hemlock"], tt.HillslopeConfig(length=30, width=12, slope=0.35, years=300, seed=4,
+                                                              disturbance="outbreak", first_disturbance=150,
+                                                              disturbance_severity=0.8), n_frames=30)
+        k = [i for i, f in enumerate(frames) if f.disturbances]
+        self.assertEqual(len(k), 1)
+        self.assertGreater(frames[k[0]].stats["snags"], 0)
+        r = tr.RetroRenderer(frames, meta)
+        self.assertEqual(r.outbreak_times, [frames[k[0]].disturbances[0][0]])
+        title = r.render(k[0] if k[0] % 2 == 0 else k[0] + 1)[:10]
+        self.assertTrue((title == tr.EGA[tr.LMAGENTA]).all(axis=2).any())     # OUTBREAK! banner
+
     def test_stop_callback(self):
         import threading
         ev = threading.Event()
@@ -116,6 +129,21 @@ class DisturbanceFrameTests(unittest.TestCase):
             length=20, width=10, years=1000, seed=1), n_frames=50, progress=prog, stop=ev)
         self.assertLess(model.time, 600)
         self.assertEqual(frames[-1].t, model.time)
+
+
+class SpriteTests(unittest.TestCase):
+    def test_every_preset_has_its_own_sprite(self):
+        kinds = {k: tr.species_kind(sp) for k, sp in tt.SPECIES.items()}
+        self.assertEqual(len(set(kinds.values())), len(tt.SPECIES))
+        for kind in kinds.values():
+            self.assertIn(kind, tr.HMAX)
+            spr = tr.make_tree_sprite(kind, tr.HMAX[kind])
+            self.assertEqual(spr.shape[0], tr.HMAX[kind])
+            self.assertTrue((spr != tr.CLEAR).any())
+        self.assertGreater(tr.make_tree_sprite("oak", 20).shape[1], tr.make_tree_sprite("deciduous", 20).shape[1])
+        self.assertLess(tr.make_tree_sprite("fir", 20).shape[1], tr.make_tree_sprite("spruce", 20).shape[1])
+        custom = tt.replace(tt.SPECIES["pine"], key="my_hemlock", name="Tsuga stand")
+        self.assertEqual(tr.species_kind(custom), "hemlock")
 
 
 @unittest.skipUnless(importlib.util.find_spec("tkinter") is not None, "tkinter not available")
