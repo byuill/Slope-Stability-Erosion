@@ -73,7 +73,7 @@ Frames are spaced evenly over the run. Extra frames are always captured at each 
 | Pit | Flat-floored bowl with depth profile `H (1 − ρⁿ)` (`pit_shape_exponent`, default n = 4, which has the volume of a half-ellipsoid; n = 2 is a paraboloid), equivalent radius R, `pit_aspect` (default 1.5) times wider across the fall line than along it. It is limited by soil thickness, and a fraction (`bedrock_pluck_fraction`) of root penetration below the soil plucks bedrock. That rock becomes soil, dilated by `rho_r/rho_s`. |
 | Mound | The root plate rotates about a hinge at the pit edge. Soil is deposited as an elliptical mound as long as the pit, centred `a + c(n) H` from the stump along the fall line (a = semi-axis along the fall line; c = depth of the excavated soil's centroid, 0.4 H for n = 4). |
 | Infill | A fraction of root-plate soil falls back into the pit: `f0 (1 - S_fall / S_crit)`, clipped to 0–0.95. `S_fall` is the ground gradient along the fall direction, `f0 = 0.3` (`--infill`) and `S_crit = tan 47°` (Norman et al. 1995, secondary). Downslope falls shed more soil away from the pit, so displaced volume grows with slope. |
-| Pit-mound collapse | Pit, mound and a 0.5 m margin are marked as fresh soil. The rate is scaled per species (`fresh_collapse_scale`; 0.4 for deciduous). This soil diffuses with an extra `D_f exp(-age/τ)`, D_f = 0.20 m²/yr and τ = 3 yr (`--fresh-diffusivity`, `--fresh-decay-time`), calibrated to the 1–5 yr spruce chronosequence of Zadrożny et al. (2017). The collapse acts on relief relative to the surrounding surface, inside a window with no-flux borders, so it conserves volume. |
+| Pit-mound collapse | Pit, mound and a 0.5 m margin are marked as fresh soil. The rate is scaled per species (`fresh_collapse_scale`; 0.4 for deciduous). This soil diffuses with an extra `D_f exp(-age/τ)`, D_f = 0.20 m²/yr and τ = 3 yr (`--fresh-diffusivity`, `--fresh-decay-time`), calibrated to the 1–5 yr spruce chronosequence of Zadrożny et al. (2017). Collapse acts on relief relative to the surrounding undisturbed surface, so regional creep is left to the background diffusion. Each connected patch of fresh soil is solved separately on its own time step, so overlapping disturbances are not double-counted. Collapse ends after 6τ. Volume is conserved and a flux limiter keeps soil thickness non-negative. |
 | Thin soils | Where soil is thinner than 0.5 m, root plates are shallower, down to half depth on bare rock (Gabet & Mudd 2010). |
 | Root cycling (optional) | `--root-cycle` adds the diffusivity of soil moved by root growth and decay (Hoffman & Anderson 2013): roots follow `Y = 1 − β^(100z)`, and only roots in the A horizon lift the surface. Off by default, because the background diffusivity already includes it with other creep. |
 | Soil production | `P = P0 exp(-h/h0)` |
@@ -143,6 +143,9 @@ For each species, in `--output/<species>/`:
 * background mortality and minimum uprooting age against the analytic stand rates;
 * size-selective windstorms, fire snags with decaying root plates, and thin-soil root plates;
 * the root-cycle flux formula against Hoffman & Anderson's (2013) published values;
+* QA/QC regressions: the global volume budget, non-negative soil, overlapping disturbances, periodic edges and input validation.
+
+`python validation/qaqc_checks.py` runs the wider QA/QC checks: budget closure across 12 configurations, grid and time-step convergence, determinism and cost. The findings and fixes are recorded in [`validation/QAQC.md`](validation/QAQC.md).
 * volume conservation, smoothing and switch-off of fresh pit-mound collapse;
 * seed reproducibility and the CLI.
 

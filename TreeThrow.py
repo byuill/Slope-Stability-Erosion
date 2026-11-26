@@ -394,6 +394,25 @@ class HillslopeConfig:
             raise ValueError("snag_fall_rate and disturbance_interval must be >= 0, root_decay_time > 0.")
         if not 0 < self.root_beta < 1:
             raise ValueError("root_beta must be in (0, 1).")
+        checks = {
+            "diffusivity": self.diffusivity >= 0, "critical_slope": self.critical_slope > 0,
+            "initial_soil_depth": self.initial_soil_depth >= 0, "soil_production_max": self.soil_production_max >= 0,
+            "soil_production_scale": self.soil_production_scale > 0,
+            "transport_depth_scale": self.transport_depth_scale > 0,
+            "rock_to_soil_dilation": self.rock_to_soil_dilation >= 1,
+            "bedrock_pluck_fraction": 0 <= self.bedrock_pluck_fraction <= 1,
+            "thin_soil_depth": self.thin_soil_depth >= 0, "wind_concentration": self.wind_concentration >= 0,
+            "storm_size_exponent": self.storm_size_exponent >= 0, "storm_min_age": self.storm_min_age >= 0,
+            "root_biomass": self.root_biomass >= 0, "root_turnover": self.root_turnover >= 0,
+            "root_density": self.root_density > 0,
+            "a_horizon_depth": self.a_horizon_depth is None or self.a_horizon_depth > 0,
+            "first_disturbance": self.first_disturbance is None or self.first_disturbance >= 0,
+            "baselevel_lowering_rate": math.isfinite(self.baselevel_lowering_rate),
+            "n_snapshots": self.n_snapshots >= 1, "record_interval": self.record_interval > 0,
+        }
+        bad = [k for k, ok in checks.items() if not ok]
+        if bad:
+            raise ValueError(f"Invalid configuration: {', '.join(bad)}")
 
 
 # ======================================================================
@@ -656,9 +675,9 @@ class TreeThrowModel:
         self.event_log: List[tuple] = []
         self.record = RunRecord()
         # Fresh (recently disturbed) soil: time each cell was last disturbed, and the
-        # bounding boxes of disturbances still collapsing.
+        # time of the latest disturbance (collapse is skipped once all fresh soil has aged).
         self.fresh_t0 = np.full((self.nx, self.ny), -np.inf)
-        self.fresh_windows: List[tuple] = []
+        self.fresh_last = -np.inf
         # Standing dead trees (fire-killed), which topple later.
         self.snags = {k: np.zeros(0) for k in ("x", "y", "R", "H", "t_death", "age_death")}
         self.n_events_by_cause = {"background": 0, "windstorm": 0, "snag": 0}
@@ -794,6 +813,12 @@ class TreeThrowModel:
         Ii, Jj = np.clip(I, 0, self.nx - 1), J % self.ny
         m = depth > 0
         Ii, Jj, Ju, depth = Ii[m], Jj[m], J[m], depth[m]
+        flat = Ii * self.ny + Jj
+        if np.unique(flat).size < flat.size:
+            # A pit wider than the plot wraps onto itself: sum the depth per cell before cutting.
+            uniq, first, inv = np.unique(flat, return_index=True, return_inverse=True)
+            depth = np.bincount(inv, weights=depth)
+            Ii, Jj, Ju = Ii[first], Jj[first], Ju[first]
 
         if cfg.soil_model:
             h_here = self.h[Ii, Jj]
@@ -801,8 +826,8 @@ class TreeThrowModel:
             rock_cut = cfg.bedrock_pluck_fraction * np.maximum(depth - h_here, 0.0)
         else:
             soil_cut, rock_cut = depth, np.zeros_like(depth)
-        np.subtract.at(self.h, (Ii, Jj), soil_cut)
-        np.subtract.at(self.zb, (Ii, Jj), rock_cut)
+        self.h[Ii, Jj] -= soil_cut                        # pit cells are unique
+        self.zb[Ii, Jj] -= rock_cut
         rock_soil = rock_cut.sum() * ca * cfg.rock_to_soil_dilation
         self.rock_to_soil_tt += rock_soil
         volume = soil_cut.sum() * ca + rock_soil         # soil-equivalent volume in root wad
@@ -818,7 +843,7 @@ class TreeThrowModel:
         f_in = float(infill_at_slope(cfg.infill_fraction, s_fall, cfg.infill_critical_slope))
         w_in = soil_cut + rock_cut
         infill = f_in * volume
-        np.add.at(self.h, (Ii, Jj), infill * w_in / (w_in.sum() * ca))
+        self.h[Ii, Jj] += infill * w_in / (w_in.sum() * ca)
         mound_vol = volume - infill
 
         # ---- mound: root plate rotated about a hinge at the pit edge -------
@@ -860,15 +885,10 @@ class TreeThrowModel:
         if cfg.fresh_diffusivity <= 0 or rows.size == 0:
             return
         mrg = int(math.ceil(cfg.fresh_margin / cfg.dx))
-        pad = mrg + 3                                     # ring of calm cells around the fresh zone
-        i0, i1 = max(int(rows.min()) - pad, 0), min(int(rows.max()) + pad, self.nx - 2)
-        j0, j1 = int(cols_unwrapped.min()) - pad, int(cols_unwrapped.max()) + pad
-        if j1 - j0 + 1 > self.ny:
-            j0, j1 = 0, self.ny - 1
+        i0, i1 = max(int(rows.min()) - mrg, 0), min(int(rows.max()) + mrg, self.nx - 2)
+        j0, j1 = int(cols_unwrapped.min()) - mrg, int(cols_unwrapped.max()) + mrg
         foot = np.zeros((i1 - i0 + 1, j1 - j0 + 1), bool)
-        r = np.clip(rows, i0, i1) - i0
-        c = np.clip(cols_unwrapped, j0, j1) - j0
-        foot[r, c] = True
+        foot[np.clip(rows, i0, i1) - i0, cols_unwrapped - j0] = True
         if mrg > 0:                                       # dilate by the margin (disc)
             grown = foot.copy()
             p = np.pad(foot, mrg)
@@ -879,70 +899,157 @@ class TreeThrowModel:
             foot = grown
         rr, cc = np.nonzero(foot)
         self.fresh_t0[rr + i0, (cc + j0) % self.ny] = self.time
-        self.fresh_windows.append((i0, i1, j0, j1, self.time))
+        self.fresh_last = self.time
 
     def _fresh_step(self, t_start: float, dt: float) -> None:
         """Collapse of fresh pits and mounds: extra diffusion on recently disturbed soil.
 
-        D_fresh(age) = fresh_diffusivity * exp(-age / fresh_decay_time), averaged
-        exactly over the step.  Applied inside each disturbance window with no
-        flux across the window border, so soil volume is conserved.  The flux is
-        driven by relief relative to a plane fitted to the undisturbed cells of the
-        window: collapse smooths the pit and mound, while downslope creep along
-        the regional gradient is left to the background diffusion.
+        Each cell's diffusivity is D_fresh(age) = fresh_diffusivity * exp(-age / tau),
+        averaged exactly over the step, with age the time since the cell was last
+        disturbed (cells older than 6 tau, when 99.75 % of the collapse is done, are calm).  Collapsing soil is split into
+        disjoint patches (see _fresh_patches), each solved on its own box and time
+        step, so overlapping disturbances are not counted twice and young, fast
+        patches do not force small steps elsewhere.  The flux is driven by relief
+        relative to the mean of the calm cells
+        of each row: collapse smooths pits and mounds, while creep along the
+        regional gradient is left to the background diffusion.  Soil volume is
+        conserved and soil thickness cannot go negative.
         """
-        cfg, dx = self.cfg, self.cfg.dx
+        cfg = self.cfg
         Df, tau = cfg.fresh_diffusivity * self.sp.fresh_collapse_scale, cfg.fresh_decay_time
-        if Df <= 0 or not self.fresh_windows:
+        if Df <= 0 or t_start - self.fresh_last >= 6.0 * tau:
             return
-        self.fresh_windows = [w for w in self.fresh_windows if t_start - w[4] < 8.0 * tau]
-        for i0, i1, j0, j1, _ in self.fresh_windows:
-            rows = np.arange(i0, i1 + 1)
-            cols = np.arange(j0, j1 + 1) % self.ny
-            ix = np.ix_(rows, cols)
-            age = t_start - self.fresh_t0[ix]
-            with np.errstate(over="ignore", invalid="ignore"):
-                Dc = Df * tau * (np.exp(-age / tau) - np.exp(-(age + dt) / tau)) / dt
-            Dc = np.where(np.isfinite(Dc) & (age >= 0), Dc, 0.0)
-            if Dc.max() <= 1e-12:
-                continue
-            Dfx = 0.5 * (Dc[1:] + Dc[:-1])
+        age = t_start - self.fresh_t0
+        live = age < 6.0 * tau
+        rows = np.flatnonzero(live.any(axis=1))
+        i0, i1 = max(int(rows[0]) - 2, 0), min(int(rows[-1]) + 2, self.nx - 2)
+        sl = slice(i0, i1 + 1)
+        a = age[sl]
+        with np.errstate(over="ignore", invalid="ignore"):
+            Dc = Df * tau * (np.exp(-a / tau) - np.exp(-(a + dt) / tau)) / dt
+        Dc = np.where(live[sl] & (a >= 0), Dc, 0.0)
+        dmax = float(Dc.max())
+        if dmax <= 1e-12:
+            return
+        h = self.h[sl].copy()
+        zb = self.zb[sl]
+        calm = Dc < 1e-3 * dmax
+        n_calm = calm.sum(axis=1)
+        z = zb + h
+        zref = np.where(n_calm > 0, (z * calm).sum(axis=1) / np.maximum(n_calm, 1), z.mean(axis=1))
+        zrel_b = zb - zref[:, None]
+        for rows_k, cols_k, periodic, Dk in self._fresh_patches(Dc):
+            ix = np.ix_(rows_k, cols_k)
+            hk = h[ix]
+            self._collapse_patch(hk, zrel_b[ix], Dk, dt, periodic)
+            h[ix] = hk
+        self.h[sl] = h
+
+    def _fresh_patches(self, Dc):
+        """Split collapsing soil into disjoint patches, each with its own box and time step.
+
+        Yields (rows, cols, periodic, D) with D zero outside the patch.  Patches are
+        8-connected regions of D > 0 (separated by at least one calm cell), so no cell
+        is diffused twice in a step.  A patch touching the plot's side edges is solved
+        across the full (periodic) width.  Without scipy the whole band is one patch.
+        """
+        nr, nc = Dc.shape
+        full_cols = np.arange(nc)
+        try:
+            from scipy import ndimage
+        except ImportError:
+            yield np.arange(nr), full_cols, True, Dc
+            return
+        lab, n = ndimage.label(Dc > 0, structure=np.ones((3, 3), bool))
+        if n == 0:
+            return
+        objs = ndimage.find_objects(lab)
+        for k, (rs, cs) in enumerate(objs, start=1):
+            r0, r1 = max(rs.start - 1, 0), min(rs.stop + 1, nr)
+            if cs.start == 0 or cs.stop == nc:
+                cols, periodic = full_cols, True
+            else:
+                cols, periodic = np.arange(cs.start - 1, cs.stop + 1), False
+            rows = np.arange(r0, r1)
+            sub = lab[np.ix_(rows, cols)] == k
+            yield rows, cols, periodic, np.where(sub, Dc[np.ix_(rows, cols)], 0.0)
+
+    def _collapse_patch(self, h, zrel, Dc, dt, periodic):
+        """Explicit diffusion of one fresh patch (h updated in place); flux leaves only via D > 0 faces."""
+        cfg, dx = self.cfg, self.cfg.dx
+        dmax = float(Dc.max())
+        Dfx = 0.5 * (Dc[1:] + Dc[:-1])
+        if periodic:
+            Dfy = 0.5 * (Dc + np.roll(Dc, -1, axis=1))
+        else:
             Dfy = 0.5 * (Dc[:, 1:] + Dc[:, :-1])
-            h = self.h[ix].copy()
-            zb = self.zb[ix]
-            # Reference plane from cells that are not currently collapsing.
-            II, JJ = np.meshgrid(np.arange(rows.size, dtype=float), np.arange(cols.size, dtype=float),
-                                 indexing="ij")
-            calm = Dc < 1e-3 * Dc.max()
-            if calm.sum() < 3:
-                calm = np.ones_like(calm)
-            A = np.column_stack([np.ones(calm.sum()), II[calm], JJ[calm]])
-            coef = np.linalg.lstsq(A, (zb + h)[calm], rcond=None)[0]
-            zb = zb - (coef[0] + coef[1] * II + coef[2] * JJ)
-            nsub = max(int(math.ceil(dt / (0.2 * dx * dx / Dc.max()))), 1)
-            sub = dt / nsub
-            for _ in range(nsub):
-                z = zb + h
-                fx, fy = Dfx, Dfy
-                if cfg.soil_model:
-                    hs = cfg.transport_depth_scale
-                    fx = Dfx * (1 - np.exp(-0.5 * (h[1:] + h[:-1]) / hs))
-                    fy = Dfy * (1 - np.exp(-0.5 * (h[:, 1:] + h[:, :-1]) / hs))
-                qx = -fx * (z[1:] - z[:-1]) / dx
-                qy = -fy * (z[:, 1:] - z[:, :-1]) / dx
-                div = np.zeros_like(h)
-                div[:-1] += qx / dx
-                div[1:] -= qx / dx
-                div[:, :-1] += qy / dx
-                div[:, 1:] -= qy / dx
-                h -= div * sub
-                self.moment_fresh += float(qx.sum()) * self.cell_area * sub
+        nsub = max(int(math.ceil(dt / (0.24 * dx * dx / dmax))), 1)   # explicit limit is 0.25 dx^2 / D
+        sub = dt / nsub
+        fx, fy = Dfx, Dfy
+        if cfg.soil_model:
+            # Soil-thickness factor, evaluated once per step (the limiter below keeps h >= 0).
+            hs = cfg.transport_depth_scale
+            fx = Dfx * (1 - np.exp(-0.5 * (h[1:] + h[:-1]) / hs))
+            hy = 0.5 * (h + np.roll(h, -1, axis=1)) if periodic else 0.5 * (h[:, 1:] + h[:, :-1])
+            fy = Dfy * (1 - np.exp(-hy / hs))
+        fx, fy = fx / dx, fy / dx
+        div = np.empty_like(h)
+        moment = 0.0
+        for _ in range(nsub):
+            z = zrel + h
+            qx = fx * (z[:-1] - z[1:])
+            if periodic:
+                qy = fy * (z - np.roll(z, -1, axis=1))
+            else:
+                qy = fy * (z[:, :-1] - z[:, 1:])
             if cfg.soil_model:
-                neg = h < 0
-                if neg.any():
-                    self.clip_error += float(-h[neg].sum()) * self.cell_area
-                    h[neg] = 0.0
-            self.h[ix] = h
+                qx, qy = self._limit_outflow(qx, qy, h, sub, periodic=periodic)
+            div.fill(0.0)
+            div[:-1] += qx
+            div[1:] -= qx
+            if periodic:
+                div += qy - np.roll(qy, 1, axis=1)
+            else:
+                div[:, :-1] += qy
+                div[:, 1:] -= qy
+            h -= div * (sub / dx)
+            moment += float(qx.sum())
+        self.moment_fresh += moment * self.cell_area * sub
+
+    def _limit_outflow(self, qx, qy, h, sub, fixed_last_row=False, periodic=True):
+        """Scale fluxes leaving each cell so that it cannot export more soil than it holds.
+
+        qx: faces between rows i and i+1 (positive toward i+1); qy: faces between columns
+        j and j+1 (positive toward j+1; periodic across the slope unless `periodic` is
+        False).  Each face is limited by its donor cell.
+        """
+        dx = self.cfg.dx
+        # Fast path: even the largest possible outflow cannot empty the thinnest cell.
+        qmax = max(float(np.abs(qx).max()) if qx.size else 0.0, float(np.abs(qy).max()) if qy.size else 0.0)
+        if 4.0 * qmax * sub / dx <= float(h.min()):
+            return qx, qy
+        out = np.zeros_like(h)
+        out[:-1] += np.maximum(qx, 0.0)
+        out[1:] += np.maximum(-qx, 0.0)
+        if periodic:
+            out += np.maximum(qy, 0.0) + np.roll(np.maximum(-qy, 0.0), 1, axis=1)
+        else:
+            out[:, :-1] += np.maximum(qy, 0.0)
+            out[:, 1:] += np.maximum(-qy, 0.0)
+        need = out * sub / dx
+        hpos = np.clip(h, 0.0, None)          # round-off can leave h at -1e-20: never divide 0 by 0
+        with np.errstate(divide="ignore", invalid="ignore"):
+            f = np.where(need > hpos, hpos / np.where(need > 0, need, 1.0), 1.0)
+        if fixed_last_row:
+            f[-1] = 1.0
+        if (f >= 1.0).all():
+            return qx, qy
+        qx = np.where(qx > 0, qx * f[:-1], qx * f[1:])
+        if periodic:
+            qy = np.where(qy > 0, qy * f, qy * np.roll(f, -1, axis=1))
+        else:
+            qy = np.where(qy > 0, qy * f[:, :-1], qy * f[:, 1:])
+        return qx, qy
 
     def _throw(self, x: float, y: float, R: float, H: float, cause: str) -> None:
         """Uproot one tree and log the event."""
@@ -1055,6 +1162,8 @@ class TreeThrowModel:
         while t_left > 1e-12:
             qx, qy, dmax = self._diffusion_fluxes(self.z, self.h)
             sub = min(t_left, 0.2 * dx * dx / max(dmax, 1e-30))
+            if cfg.soil_model:
+                qx, qy = self._limit_outflow(qx, qy, self.h, sub, fixed_last_row=True)
             div = np.zeros((self.nx, self.ny))
             div[:-1] += qx / dx                            # outflow through lower face
             div[1:] -= qx / dx                             # inflow through upper face
@@ -1097,6 +1206,8 @@ class TreeThrowModel:
         self._diffusion_step(dt)
         self._fresh_step(t_start, dt)
         self._baselevel()
+        if not math.isfinite(float(self.h.sum()) + float(self.zb.sum())):
+            raise FloatingPointError(f"non-finite soil or bedrock at year {self.time:g} (please report this run)")
         return n
 
     def _record(self, events: int) -> None:

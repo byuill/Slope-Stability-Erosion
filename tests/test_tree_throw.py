@@ -180,7 +180,7 @@ class FreshCollapseTests(unittest.TestCase):
         z20 = m.z.copy()
         m.step()
         self.assertLess(np.abs(m.z - z20).max(), 1e-6)
-        self.assertEqual(m.fresh_windows, [])
+        self.assertGreaterEqual(m.time - m.fresh_last, 6 * m.cfg.fresh_decay_time)
 
     def test_no_collapse_when_disabled(self):
         m = model(soil_model=False, tree_throw=False, diffusivity=0.0, fresh_diffusivity=0.0)
@@ -275,6 +275,92 @@ class ForestDynamicsTests(unittest.TestCase):
         self.assertGreater(m.D_root, 0)
         m.step()
         self.assertGreater(m.moment_diff, 0)
+
+
+class QAQCRegressionTests(unittest.TestCase):
+    """Defects found in the QA/QC review."""
+
+    @staticmethod
+    def budget(m, z0):
+        dil = m.cfg.rock_to_soil_dilation
+        dz = float((m.z[:-1] - z0[:-1]).sum()) * m.cell_area
+        gain = (dil - 1) / dil * (m.rock_to_soil_tt + m.rock_to_soil_sp) if m.cfg.soil_model else 0.0
+        return dz, gain - m.export_tt - m.export_diff + m.clip_error
+
+    def test_global_volume_budget_closes(self):
+        for kw in (dict(), dict(disturbance="windstorm", disturbance_interval=50, disturbance_severity=0.4),
+                   dict(transport_law="nonlinear", slope=0.9, initial_soil_depth=0.2)):
+            cfg = tt.HillslopeConfig(length=24, width=10, years=300, seed=4, **{"slope": 0.35, **kw})
+            m = tt.TreeThrowModel(tt.SPECIES["spruce"], cfg)
+            z0 = m.z.copy()
+            m.run(progress=False)
+            dz, expected = self.budget(m, z0)
+            self.assertAlmostEqual(dz, expected, places=8)
+            self.assertLess(m.clip_error, 1e-9)          # soil never driven negative (beyond round-off)
+            self.assertGreaterEqual(m.h[:-1].min(), 0.0)
+
+    def test_pit_wider_than_plot_does_not_overcut(self):
+        cfg = tt.HillslopeConfig(length=20, width=2.0, slope=0.3, dx=0.25, years=1, initial_soil_depth=0.3,
+                                 bedrock_pluck_fraction=0.0, infill_fraction=0.0, fresh_diffusivity=0.0, seed=1)
+        m = tt.TreeThrowModel(tt.SPECIES["spruce"], cfg)
+        h0 = m.h.copy()
+        ev = m.uproot(10.0, 1.0, 1.65, 1.2, 0.0)
+        self.assertGreaterEqual(m.h.min(), -1e-12)
+        removed_soil = float((h0 - m.h).clip(min=0).sum()) * m.cell_area
+        self.assertLessEqual(ev["volume"], float(h0[:-1].sum()) * m.cell_area)
+        self.assertGreater(removed_soil, 0)
+
+    def test_overlapping_disturbances_collapse_once(self):
+        ratios = []
+        for n_ev in (1, 2):
+            cfg = tt.HillslopeConfig(length=16, width=12, slope=0.35, dx=0.25, years=3, soil_model=False,
+                                     tree_throw=False, diffusivity=0.0, infill_fraction=0.0, seed=0)
+            m = tt.TreeThrowModel(tt.SPECIES["spruce"], cfg)
+            z0 = m.z.copy()
+            for _ in range(n_ev):
+                m.uproot(6.0, 6.0, 1.6, 1.2, 0.0)
+            d0 = -(m.z - z0).min()
+            for _ in range(3):
+                m.step()
+            ratios.append(-(m.z - z0).min() / d0)
+        self.assertAlmostEqual(ratios[0], ratios[1], places=6)
+
+    def test_collapse_across_periodic_edge(self):
+        """A pit straddling the side boundary collapses like one in the middle of the plot."""
+        res = []
+        for y in (6.0, 0.1):
+            cfg = tt.HillslopeConfig(length=16, width=12, slope=0.35, dx=0.25, years=3, soil_model=False,
+                                     tree_throw=False, diffusivity=0.0, infill_fraction=0.0, seed=0)
+            m = tt.TreeThrowModel(tt.SPECIES["spruce"], cfg)
+            z0 = m.z.copy()
+            m.uproot(6.0, y, 1.6, 1.2, math.pi / 2)
+            d0 = -(m.z - z0).min()
+            for _ in range(3):
+                m.step()
+            self.assertAlmostEqual(float((m.z - z0).sum()), 0.0, places=8)
+            res.append(-(m.z - z0).min() / d0)
+        self.assertAlmostEqual(res[0], res[1], delta=0.03)
+
+    def test_limiter_handles_roundoff_negative_soil(self):
+        cfg = tt.HillslopeConfig(length=10, width=5, years=1, seed=1)
+        m = tt.TreeThrowModel(tt.SPECIES["pine"], cfg)
+        h = np.full((4, 6), 0.2)
+        h[1, 2] = -1e-20                                  # round-off left by an earlier step
+        qx = np.zeros((3, 6))
+        qy = np.zeros((4, 6))
+        qx[0, 0] = 1.0                                    # one active face forces the full limiter path
+        qx2, qy2 = m._limit_outflow(qx, qy, h, 1.0)
+        self.assertTrue(np.isfinite(qx2).all() and np.isfinite(qy2).all())
+        for periodic in (True, False):
+            qy = np.zeros((4, 6 if periodic else 5))
+            qx2, qy2 = m._limit_outflow(qx, qy, h, 1.0, periodic=periodic)
+            self.assertTrue(np.isfinite(qx2).all() and np.isfinite(qy2).all())
+
+    def test_config_validation_rejects_bad_values(self):
+        for bad in (dict(diffusivity=-1e-3), dict(record_interval=0), dict(a_horizon_depth=0.0),
+                    dict(rock_to_soil_dilation=0.5), dict(storm_min_age=-1), dict(first_disturbance=-5)):
+            with self.assertRaises(ValueError):
+                tt.HillslopeConfig(**bad).validate()
 
 
 class DiffusionTests(unittest.TestCase):

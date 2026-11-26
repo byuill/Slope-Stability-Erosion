@@ -31,7 +31,7 @@ import sys
 import threading
 import time
 import traceback
-from dataclasses import asdict, fields, replace
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import tkinter as tk
