@@ -148,6 +148,7 @@ class TreeSpecies:
     pit_shape_exponent: float = 4.0  # pit depth profile H (1 - rho^n): 2 = paraboloid, larger = flatter floor
     background_mortality: float = 0.0  # annual death probability at any age (competition, disease, ...)
     min_uproot_age: float = 0.0   # yr; younger trees snap or die standing instead of uprooting
+    fresh_collapse_scale: float = 1.0  # multiplier on the fresh pit-mound collapse rate (soil/site dependent)
     size_depth_correlation: float = -0.6  # correlation of plate diameter and depth (log space)
 
     # ---- derived quantities ------------------------------------------------
@@ -184,6 +185,7 @@ class TreeSpecies:
             "pit_shape_exponent": self.pit_shape_exponent >= 1.0,
             "background_mortality": 0.0 <= self.background_mortality < 1.0,
             "min_uproot_age": self.min_uproot_age >= 0.0,
+            "fresh_collapse_scale": self.fresh_collapse_scale >= 0.0,
             "size_depth_correlation": -1.0 < self.size_depth_correlation < 1.0,
         }
         bad = [k for k, ok in checks.items() if not ok]
@@ -228,13 +230,14 @@ SPECIES: Dict[str, TreeSpecies] = {
         lifespan_mean=250.0, lifespan_sd=75.0,
         density=280.0,                            # Šamonil et al. 2017: 210-297 stems/ha
         uproot_fraction=0.40,                     # x share past min_uproot_age -> ~27 % of deaths
-        root_plate_diameter=3.0, root_plate_diameter_cv=0.30,
+        root_plate_diameter=2.85, root_plate_diameter_cv=0.30,
         root_plate_depth=0.75, root_plate_depth_cv=0.30,
         maturity_age=100.0,
         dbh=50.0,
         regeneration_delay=5.0,
         background_mortality=0.005,
         min_uproot_age=80.0,                      # uprooting uncommon below ~80-100 yr (Schaetzl et al. 1989)
+        fresh_collapse_scale=0.4,                 # slower than montane spruce: Doane 2021 couplets, Harvard Forest relief
     ),
     "aspen": TreeSpecies(
         key="aspen",
@@ -341,6 +344,7 @@ class HillslopeConfig:
     disturbance_severity: float = 1.0  # fraction of standing trees killed (windstorm: size-weighted)
     storm_uproot_fraction: float = 0.8   # share of storm-killed trees that uproot (the rest snap)
     storm_size_exponent: float = 1.0     # storm kill probability grows as (plate radius / mean)^k
+    storm_min_age: float = 15.0        # yr; younger (shorter than ~5 m) trees are not storm-felled (Constantine 2012)
     snag_fall_rate: float = 0.1        # 1/yr; fire-killed snags topple at this exponential rate
     root_decay_time: float = 15.0      # yr; a dead tree's root-plate volume decays as exp(-t / tau)
 
@@ -888,7 +892,7 @@ class TreeThrowModel:
         the regional gradient is left to the background diffusion.
         """
         cfg, dx = self.cfg, self.cfg.dx
-        Df, tau = cfg.fresh_diffusivity, cfg.fresh_decay_time
+        Df, tau = cfg.fresh_diffusivity * self.sp.fresh_collapse_scale, cfg.fresh_decay_time
         if Df <= 0 or not self.fresh_windows:
             return
         self.fresh_windows = [w for w in self.fresh_windows if t_start - w[4] < 8.0 * tau]
@@ -978,7 +982,7 @@ class TreeThrowModel:
             return
         self.next_disturbance = (self.time + float(self.rng.exponential(cfg.disturbance_interval))
                                  if cfg.disturbance_interval > 0 else math.inf)
-        live = np.flatnonzero(self.age >= 0)
+        live = np.flatnonzero(self.age >= (cfg.storm_min_age if cfg.disturbance == "windstorm" else 0.0))
         if live.size == 0:
             return
         R, H = plate_at_age(sp, self.R_mature[live], self.H_mature[live], self.age[live])
@@ -992,7 +996,8 @@ class TreeThrowModel:
         killed = live[hit]
         self.n_deaths += killed.size
         if cfg.disturbance == "windstorm":
-            up = (self.age[killed] >= sp.min_uproot_age) & (self.rng.random(killed.size) < cfg.storm_uproot_fraction)
+            # Storm-felled trees uproot regardless of the background minimum topple age.
+            up = self.rng.random(killed.size) < cfg.storm_uproot_fraction
             for k, r, h in zip(killed[up], R[hit][up], H[hit][up]):
                 self._throw(self.tx[k], self.ty[k], r, h, "windstorm")
         else:

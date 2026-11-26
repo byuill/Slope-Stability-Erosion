@@ -32,7 +32,7 @@ Requires `numpy` and `matplotlib` (`scipy` is optional). Runs headless (Agg back
 | Pit | Flat-floored bowl with depth profile `H (1 − ρⁿ)` (`pit_shape_exponent`, default n = 4, which has the volume of a half-ellipsoid; n = 2 is a paraboloid), equivalent radius R, `pit_aspect` (default 1.5) times wider across the fall line than along it. It is limited by soil thickness, and a fraction (`bedrock_pluck_fraction`) of root penetration below the soil plucks bedrock. That rock becomes soil, dilated by `rho_r/rho_s`. |
 | Mound | The root plate rotates about a hinge at the pit edge. Soil is deposited as an elliptical mound as long as the pit, centred `a + c(n) H` from the stump along the fall line (a = semi-axis along the fall line; c = depth of the excavated soil's centroid, 0.4 H for n = 4). |
 | Infill | A fraction of root-plate soil falls back into the pit: `f0 (1 - S_fall / S_crit)`, clipped to 0–0.95. `S_fall` is the ground gradient along the fall direction, `f0 = 0.3` (`--infill`) and `S_crit = tan 47°` (Norman et al. 1995, secondary). Downslope falls shed more soil away from the pit, so displaced volume grows with slope. |
-| Pit-mound collapse | Pit, mound and a 0.5 m margin are marked as fresh soil. This soil diffuses with an extra `D_f exp(-age/τ)`, D_f = 0.20 m²/yr and τ = 3 yr (`--fresh-diffusivity`, `--fresh-decay-time`), calibrated to the 1–5 yr spruce chronosequence of Zadrożny et al. (2017). The collapse acts on relief relative to the surrounding surface, inside a window with no-flux borders, so it conserves volume. |
+| Pit-mound collapse | Pit, mound and a 0.5 m margin are marked as fresh soil. The rate is scaled per species (`fresh_collapse_scale`; 0.4 for deciduous). This soil diffuses with an extra `D_f exp(-age/τ)`, D_f = 0.20 m²/yr and τ = 3 yr (`--fresh-diffusivity`, `--fresh-decay-time`), calibrated to the 1–5 yr spruce chronosequence of Zadrożny et al. (2017). The collapse acts on relief relative to the surrounding surface, inside a window with no-flux borders, so it conserves volume. |
 | Thin soils | Where soil is thinner than 0.5 m, root plates are shallower, down to half depth on bare rock (Gabet & Mudd 2010). |
 | Root cycling (optional) | `--root-cycle` adds the diffusivity of soil moved by root growth and decay (Hoffman & Anderson 2013): roots follow `Y = 1 − β^(100z)`, and only roots in the A horizon lift the surface. Off by default, because the background diffusivity already includes it with other creep. |
 | Soil production | `P = P0 exp(-h/h0)` |
@@ -47,7 +47,7 @@ Requires `numpy` and `matplotlib` (`scipy` is optional). Runs headless (Agg back
 | Background mortality (/yr) | 0.003 | 0.005 | 0.010 | 0.020 |
 | Minimum uprooting age (yr) | 80 | 80 | 20 | 30 |
 | P(uproot \| eligible death) | 0.19 | 0.40 | 0.25 | 0.85 |
-| Mature root-plate diameter (m) | 2.4 | 3.0 | 1.5 | 3.3 |
+| Mature root-plate diameter (m) | 2.4 | 2.85 | 1.5 | 3.3 |
 | Mature root-plate depth (m) | 1.0 | 0.75 | 0.5 | 1.4* |
 | Pit width / length | 1.5 | 1.5 | 1.5 | 1.54 |
 | Size–depth correlation | −0.6 | −0.6 | −0.6 | −0.8 |
@@ -56,13 +56,14 @@ Requires `numpy` and `matplotlib` (`scipy` is optional). Runs headless (Agg back
 | → Deaths (/ha/yr) | 2.2 | 1.9 | 18 | 4.3 |
 | → Uprooting share of deaths | 15 % | 26 % | 20 % | 46 % |
 | → Uprootings (/ha/yr) | 0.32 | 0.52 | 3.8 | 2.0 |
-| → Mean displaced volume (m³) | 2.1 | 2.5 | 0.40 | 4.7 |
-| → Expected tree-throw D at S = 0.35, uprooting only (m²/yr) | 1.1e-4 | 2.4e-4 | 1.4e-4 | 1.9e-3 |
+| Fresh-collapse rate scale | 1 | 0.4 | 1 | 1 |
+| → Mean displaced volume (m³) | 2.1 | 2.2 | 0.40 | 4.7 |
+| → Expected tree-throw D at S = 0.35, uprooting only (m²/yr) | 1.1e-4 | 2.0e-4 | 1.4e-4 | 1.9e-3 |
 
 \*Root-plate thickness. About 17 % of the soil falls straight back on a 25° slope, leaving a 1.16 m open pit. Collapse brings it to the observed 0.95 m within a year.
 
 * **Spruce**: the pit depth, volume, shape, 1–5 yr degradation and size–depth correlation come from 75 uprooted Norway spruce in Babia Góra (Zadrożny et al. 2017). Mortality, uprooting share and rate come from the Boubín and Žofín mountain reserves (Šamonil et al. 2017).
-* **Deciduous**: root-plate size gives a displaced volume of 2.5 m³, matching beech and old-growth values of 2.4–2.8 m³. Mortality, uprooting share (~27 %) and rate (~0.5 /ha/yr) follow Šamonil's lowland and highland reserves. Together they give an 11–18 % tree-throw share of hillslope flux, as Doane et al. (2021) measured for southern-Indiana hardwoods.
+* **Deciduous**: root-plate size gives a displaced volume of 2.2 m³, near beech and old-growth values of 2.4–2.8 m³. Pit-mounds collapse at 0.4× the spruce rate, which matches Doane's 5–10 yr couplets and the Harvard Forest relief of young couplets. Mortality, uprooting share (~27 %) and rate (~0.5 /ha/yr) follow Šamonil's lowland and highland reserves. Together they give an 11–18 % tree-throw share of hillslope flux, as Doane et al. (2021) measured for southern-Indiana hardwoods.
 * **Pine**: mortality, topple share (15 %) and minimum topple age (80 yr) follow Gabet & Mudd's (2010) Douglas-fir parameters. Root-plate size remains an estimate.
 * **Aspen** remains an estimate; no aspen-specific data were available.
 
@@ -106,7 +107,7 @@ For each species, in `--output/<species>/`:
 
 ## Literature validation
 
-`python validation/run_validation.py` takes about 2 minutes on 4 cores; use `--quick` for a smoke test. It compares the model with:
+`python validation/run_validation.py` takes about 3 minutes on 4 cores; use `--quick` for a smoke test. It compares the model with:
 
 * pit-mound volumes and slope dependence;
 * uprooting rates;
