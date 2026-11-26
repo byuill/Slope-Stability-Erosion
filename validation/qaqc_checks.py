@@ -1,8 +1,12 @@
 """QA/QC checks for TreeThrow.py: volume budget, positivity, grid and time-step convergence, determinism,
 overlapping disturbances and cost.  Run: python validation/qaqc_checks.py"""
 import math
+import argparse
+import contextlib
+import io
 import sys
 import time
+from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
@@ -30,7 +34,7 @@ def run_budget(args):
     m.run(progress=False)
     dz, exp = budget(m, z0)
     return (name, dz, exp, m.clip_error, m.n_events, time.time() - t0,
-            bool(np.isfinite(m.z).all()), float(m.h.min()))
+            bool(np.isfinite(m.z).all()), float(m.h.min()), cfg.soil_model)
 
 
 def run_dx(args):
@@ -54,6 +58,43 @@ def run_dt(args):
         s["final_roughness_m"]
 
 
+def check_budget(result):
+    """Fail the command when conservation, finiteness or positivity is violated."""
+    name, dz, expected, clip, _, _, finite, hmin, soil_model = result
+    if not finite or not np.isfinite([dz, expected, clip, hmin]).all():
+        raise AssertionError(f"{name}: non-finite model state or budget")
+    if abs(dz - expected) > 1e-11:
+        raise AssertionError(f"{name}: volume residual {dz - expected:+.3e} m3 exceeds 1e-11")
+    if abs(clip) > 1e-11 or (soil_model and hmin < -1e-13):
+        raise AssertionError(f"{name}: soil positivity failed: clip={clip:.3e}, hmin={hmin:.3e}")
+
+
+def run_lodgepole_dx(args):
+    dx, seed = args
+    m = tt.TreeThrowModel(tt.SPECIES["lodgepole_pine"], tt.HillslopeConfig(
+        length=30, width=20, slope=0.35, dx=dx, years=1500, seed=seed, n_snapshots=2))
+    m.run(progress=False)
+    s = m.summary()
+    return dx, seed, s["effective_D_tree_throw_m2_yr"], s["tree_throw_share_of_flux"], \
+        s["final_roughness_m"], s["mean_event_volume_m3"]
+
+
+def run_disturbance_dt(args):
+    dt, seed = args
+    cfg = tt.HillslopeConfig(length=30, width=20, slope=0.5, dx=0.25, years=600, seed=seed,
+                             dt=dt, disturbance="fire", first_disturbance=203.5, n_snapshots=2,
+                             record_interval=10)
+    m = tt.TreeThrowModel(tt.SPECIES["lodgepole_pine"], cfg)
+    z0 = m.z.copy()
+    m.run(progress=False)
+    dz, expected = budget(m, z0)
+    check_budget((f"fire dt={dt} seed={seed}", dz, expected, m.clip_error, m.n_events, 0,
+                  bool(np.isfinite(m.z).all()), float(m.h.min()), cfg.soil_model))
+    s = m.summary()
+    return dt, seed, s["uprooting_rate_per_ha_yr"], s["tree_throw_share_of_flux"], \
+        s["final_roughness_m"], m.disturbance_log[0][0] - cfg.first_disturbance
+
+
 def single_event_volume(sp_key, dx, R, H):
     cfg = tt.HillslopeConfig(length=20, width=12, slope=0.3, dx=dx, years=1, soil_model=False,
                              infill_fraction=0.0, fresh_diffusivity=0.0, seed=1)
@@ -63,7 +104,37 @@ def single_event_volume(sp_key, dx, R, H):
     return ev["volume"] / exact, ev["moment"] / ev["volume"]
 
 
-if __name__ == "__main__":
+def small_plate_geometry(dx, n=2000):
+    """Isolate grid-phase error from mortality, soil limits and terrain feedback.
+
+    Representative R=0.4--0.6 m lodgepole plates on a reset planar surface;
+    simulated and exact moments use identical plate sizes and fall angles.
+    """
+    cfg = tt.HillslopeConfig(length=12, width=8, slope=0.35, dx=dx, years=1,
+                             soil_model=False, fresh_diffusivity=0, seed=0)
+    sp = tt.SPECIES["lodgepole_pine"]
+    m = tt.TreeThrowModel(sp, cfg)
+    rng = np.random.default_rng(123)
+    radii = rng.uniform(0.4, 0.6, n)
+    angles = rng.vonmises(0, sp.fall_slope_bias * cfg.slope, n)
+    phases = rng.uniform(-0.5, 0.5, (n, 2))
+    simulated, exact, volume_errors = [], [], []
+    for r, phi, phase in zip(radii, angles, phases):
+        h = 0.5 * r
+        m.h.fill(0)       # no bedrock change without the soil model
+        ev = m.uproot(6 + dx * phase[0], 4 + dx * phase[1], r, h, phi,
+                      s_fall=cfg.slope * math.cos(phi))
+        vol = tt.pit_volume_factor(sp.pit_shape_exponent) * math.pi * r * r * h
+        f = float(tt.infill_at_slope(cfg.infill_fraction, cfg.slope * math.cos(phi),
+                                     cfg.infill_critical_slope))
+        d = r / math.sqrt(sp.pit_aspect) + tt.pit_centroid_depth_fraction(sp.pit_shape_exponent) * h
+        exact.append(vol * (1 - f) * d * math.cos(phi))
+        simulated.append(ev["moment"])
+        volume_errors.append(abs(ev["volume"] / vol - 1))
+    return sum(simulated) / sum(exact), max(volume_errors)
+
+
+def main(workers=4):
     base = dict(length=40, width=20, slope=0.35, years=1500, seed=11, n_snapshots=2)
     cases = [
         ("deciduous default", "deciduous", base),
@@ -87,15 +158,25 @@ if __name__ == "__main__":
         ("douglas_fir storms", "douglas_fir", dict(base, disturbance="windstorm", disturbance_interval=100,
                                                    disturbance_severity=0.2)),
         ("ponderosa thin soil", "ponderosa_pine", dict(base, initial_soil_depth=0.2)),
+        ("near-critical very thin", "spruce", dict(base, years=300, slope=1.24,
+                                                 transport_law="nonlinear", initial_soil_depth=1e-4)),
+        ("bare rock no plucking", "spruce", dict(base, years=300, initial_soil_depth=0,
+                                                soil_production_max=0, bedrock_pluck_fraction=0)),
+        ("thin narrow storms", "lodgepole_pine", dict(base, years=300, width=3, slope=0.9,
+                                                    initial_soil_depth=0.02, transport_law="nonlinear",
+                                                    disturbance="windstorm", disturbance_interval=20)),
+        ("lodgepole small plates", "lodgepole_pine", base),
     ]
     print("== Volume budget (hillslope rows) ==")
-    with ProcessPoolExecutor(4) as ex:
-        for name, dz, exp, clip, nev, secs, finite, hmin in ex.map(run_budget, cases):
+    with ProcessPoolExecutor(workers) as ex:
+        for result in ex.map(run_budget, cases):
+            check_budget(result)
+            name, dz, exp, clip, nev, secs, finite, hmin, _ = result
             print(f"{name:28s} dV {dz:10.4f}  expected {exp:10.4f}  residual {dz - exp:+.2e} m3  "
                   f"clip {clip:.2e}  events {nev:5d}  {secs:5.1f}s  finite {finite}  h_min {hmin:.3f}")
 
     print("\n== Single-event pit volume vs analytic, by dx ==")
-    for sp_key in ("aspen", "deciduous", "spruce"):
+    for sp_key in ("aspen", "deciduous", "spruce", "lodgepole_pine"):
         sp = tt.SPECIES[sp_key]
         R, H = 0.5 * sp.root_plate_diameter, sp.root_plate_depth
         row = []
@@ -106,8 +187,13 @@ if __name__ == "__main__":
         print(f"{sp_key:10s} R={R:.2f}  " + " | ".join(row) +
               f" | analytic disp {a + tt.pit_centroid_depth_fraction(sp.pit_shape_exponent) * H:.2f}")
 
+    print("\n== Isolated small-plate geometry (R=0.4--0.6 m, 2000 matched events per dx) ==")
+    for dx in (0.125, 0.25, 0.5):
+        ratio, error = small_plate_geometry(dx)
+        print(f"dx {dx:5.3f}: signed moment sim/exact {ratio:.6f}; max relative volume error {error:.2e}")
+
     print("\n== Grid convergence (deciduous, 3 seeds) ==")
-    with ProcessPoolExecutor(4) as ex:
+    with ProcessPoolExecutor(workers) as ex:
         res = list(ex.map(run_dx, [(dx, s) for dx in (0.125, 0.25, 0.5) for s in range(3)]))
     for dx in (0.125, 0.25, 0.5):
         rr = np.array([r[2:] for r in res if r[0] == dx])
@@ -115,12 +201,30 @@ if __name__ == "__main__":
               f"roughness {100 * rr[:, 2].mean():.1f} cm  event vol {rr[:, 3].mean():.2f}")
 
     print("\n== Time-step sensitivity (spruce, 3 seeds) ==")
-    with ProcessPoolExecutor(4) as ex:
+    with ProcessPoolExecutor(workers) as ex:
         res = list(ex.map(run_dt, [(dt, s) for dt in (1.0, 2.0, 5.0) for s in range(3)]))
     for dt in (1.0, 2.0, 5.0):
         rr = np.array([r[2:] for r in res if r[0] == dt])
         print(f"dt {dt:3.0f}: uproot {rr[:, 0].mean():.2f}/ha/yr  deaths {rr[:, 1].mean():.2f}  "
               f"share {100 * rr[:, 2].mean():.1f}%  roughness {100 * rr[:, 3].mean():.1f} cm")
+
+    print("\n== Small-root-plate grid sensitivity (lodgepole_pine, 3 seeds; mean +/- SE) ==")
+    with ProcessPoolExecutor(workers) as ex:
+        res = list(ex.map(run_lodgepole_dx, [(dx, s) for dx in (0.125, 0.25, 0.5) for s in range(3)]))
+    for dx in (0.125, 0.25, 0.5):
+        rr = np.array([r[2:] for r in res if r[0] == dx])
+        se = rr[:, 0].std(ddof=1) / math.sqrt(len(rr))
+        print(f"dx {dx:5.3f}: D_tt {rr[:, 0].mean():.3e} +/- {se:.2e}  "
+              f"share {100 * rr[:, 1].mean():.1f}%  roughness {100 * rr[:, 2].mean():.1f} cm  "
+              f"event vol {rr[:, 3].mean():.3f}")
+
+    print("\n== Disturbance time-step sensitivity (lodgepole fire at 203.5 yr, 3 seeds) ==")
+    with ProcessPoolExecutor(workers) as ex:
+        res = list(ex.map(run_disturbance_dt, [(dt, s) for dt in (0.5, 1, 2, 5) for s in range(3)]))
+    for dt in (0.5, 1, 2, 5):
+        rr = np.array([r[2:] for r in res if r[0] == dt])
+        print(f"dt {dt:3.1f}: rate {rr[:, 0].mean():.2f}/ha/yr  share {100 * rr[:, 1].mean():.1f}%  "
+              f"roughness {100 * rr[:, 2].mean():.1f} cm  scheduling delay {rr[:, 3].max():.2f} yr")
 
     print("\n== Determinism ==")
     a = tt.TreeThrowModel(tt.SPECIES["aspen"], tt.HillslopeConfig(length=20, width=10, years=200, seed=5))
@@ -129,6 +233,8 @@ if __name__ == "__main__":
     for m in (a, b, c):
         m.run(progress=False)
     print("same seed identical:", np.array_equal(a.z, b.z), "| different seed differs:", not np.array_equal(a.z, c.z))
+    assert np.array_equal(a.z, b.z) and a.event_log == b.event_log, "same-seed determinism failed"
+    assert not np.array_equal(a.z, c.z), "different seeds unexpectedly give identical surfaces"
 
     print("\n== Overlapping disturbances collapse once (relative pit decay after 3 yr) ==")
     for n_ev in (1, 2):
@@ -147,4 +253,24 @@ if __name__ == "__main__":
     print("\n== summary() cost ==")
     t0 = time.time()
     a.summary()
-    print(f"summary(): {time.time() - t0:.2f} s")
+    print(f"summary() cold: {time.time() - t0:.4f} s")
+    t0 = time.perf_counter()
+    a.summary()
+    print(f"summary() cached: {time.perf_counter() - t0:.6f} s")
+    print(f"\nPASS: {len(cases)} budgets at <=1e-11 m3; positivity, finite state and determinism.")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--output", type=Path, default=Path(__file__).resolve().parent / "results" / "qaqc_report.txt")
+    args = parser.parse_args()
+    report = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(report):
+            main(args.workers)
+    finally:
+        text = report.getvalue()
+        print(text, end="", flush=True)
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(text, encoding="utf-8")

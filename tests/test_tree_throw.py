@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -447,6 +448,204 @@ class QAQCRegressionTests(unittest.TestCase):
                     dict(rock_to_soil_dilation=0.5), dict(storm_min_age=-1), dict(first_disturbance=-5)):
             with self.assertRaises(ValueError):
                 tt.HillslopeConfig(**bad).validate()
+
+
+class SecondReviewRegressionTests(unittest.TestCase):
+    def test_periodic_translation_preserves_entire_collapse_surface(self):
+        runs = []
+        for y in (6.0, 0.25):
+            m = model("spruce", length=16, width=12, years=3, soil_model=False,
+                      tree_throw=False, diffusivity=0, infill_fraction=0)
+            m.uproot(6, y, 1.6, 1.2, math.pi / 2)
+            runs.append(m)
+        np.testing.assert_array_equal(np.roll(runs[0].h, -23, axis=1), runs[1].h)
+        for m in runs:
+            for _ in range(3):
+                m.step()
+        np.testing.assert_allclose(np.roll(runs[0].z, -23, axis=1), runs[1].z, rtol=0, atol=1e-12)
+
+    def test_patches_sharing_transport_cells_are_solved_together(self):
+        m = model()
+        for cols in ((0, 11), (4, 6)):
+            Dc = np.zeros((8, 12))
+            Dc[3:5, list(cols)] = 0.2
+            patches = list(m._fresh_patches(Dc))
+            self.assertEqual(len(patches), 1)
+            self.assertEqual(np.count_nonzero(patches[0][3]), 4)
+
+    def test_disjoint_patches_equal_one_band_solve(self):
+        m = model(soil_model=False)
+        rng = np.random.default_rng(17)
+        h = rng.normal(size=(12, 24))
+        Dc = np.zeros_like(h)
+        Dc[2:4, 0:2] = Dc[2:4, -2:] = 0.2
+        Dc[7:9, 10:12] = 0.2
+        ref = h.copy()
+        m._collapse_patch(ref, np.zeros_like(h), Dc, 0.3, True)
+        for rows, cols, periodic, D in m._fresh_patches(Dc):
+            ix = np.ix_(rows, cols)
+            local = h[ix]
+            m._collapse_patch(local, np.zeros_like(local), D, 0.3, periodic)
+            h[ix] = local
+        np.testing.assert_allclose(h, ref, rtol=0, atol=1e-14)
+
+    def test_flux_limiter_keeps_soil_positive_and_balances_boundary(self):
+        m = model()
+        rng = np.random.default_rng(81)
+        for periodic in (False, True):
+            for fixed in (False, True):
+                h = rng.uniform(0, 0.01, (7, 9))
+                h[0, 0] = 0
+                qx = rng.normal(0, 10, (6, 9))
+                qy = rng.normal(0, 10, (7, 9 if periodic else 8))
+                qx, qy = m._limit_outflow(qx, qy, h, 2, fixed_last_row=fixed, periodic=periodic)
+                div = np.zeros_like(h)
+                div[:-1] += qx
+                div[1:] -= qx
+                if periodic:
+                    div += qy - np.roll(qy, 1, axis=1)
+                else:
+                    div[:, :-1] += qy
+                    div[:, 1:] -= qy
+                final = h - div * 2 / m.cfg.dx
+                active = slice(None, -1) if fixed else slice(None)
+                self.assertGreaterEqual(final[active].min(), -1e-14)
+                change = (final[active] - h[active]).sum() * m.cell_area
+                expected = -qx[-1].sum() * m.cfg.dx * 2 if fixed else 0
+                self.assertAlmostEqual(change, expected, places=12)
+
+    def test_nonlinear_diffusion_damps_small_grid_scale_noise(self):
+        runs = [model(length=20, width=10, slope=0.95, diffusivity=0.02,
+                      transport_law="nonlinear", soil_model=False, tree_throw=False,
+                      fresh_diffusivity=0) for _ in range(2)]
+        runs[1].h[20:60] += (1e-6 * (-1.0) ** np.arange(40))[:, None]
+        for m in runs:
+            m._diffusion_step(1)
+        # Inspect cells far from the ridge/channel and perturbation edges.
+        noise = (runs[1].z - runs[0].z)[30:50]
+        self.assertLess(np.abs(noise).max(), 1e-6)
+
+    def test_snags_use_age_at_death_cause_and_configured_decay(self):
+        m = model("oak", snag_fall_rate=100, root_decay_time=6)
+        m._add_snags([3, 4], [2, 2], [1, 1], [0.6, 0.6], [100, 0], killed=True)
+        m.time = 12
+        # Force both topplings and the conditional uprooting draws.
+        with patch.object(m, "_throw") as throw, patch.object(m, "rng") as rng:
+            rng.random.side_effect = [np.zeros(2), np.zeros(2)]
+            m._snag_step(1)
+        self.assertEqual(throw.call_count, 1)
+        args = throw.call_args.args
+        self.assertAlmostEqual(args[2], math.exp(-12 / 6) ** (1 / 3))
+        self.assertAlmostEqual(args[3], 0.6 * math.exp(-12 / 6) ** (1 / 3))
+        self.assertEqual(args[-1], "disturbance_snag")
+        self.assertEqual(m.snags["x"].size, 0)
+
+    def test_run_ends_at_requested_duration(self):
+        m = model(years=2.5, dt=2, tree_throw=False)
+        m.run(progress=False)
+        self.assertEqual(m.time, 2.5)
+        self.assertEqual(m.record.time[-1], 2.5)
+        m.run(years=0.75, progress=False)
+        self.assertEqual(m.time, 3.25)
+
+    def test_invalid_step_or_duration_does_not_mutate_model(self):
+        m = model()
+        h0, age0 = m.h.copy(), m.age.copy()
+        for bad in (0, -1, float("nan"), float("inf")):
+            with self.subTest(dt=bad), self.assertRaises(ValueError):
+                m.step(bad)
+            with self.subTest(years=bad), self.assertRaises(ValueError):
+                m.run(years=bad, progress=False)
+        np.testing.assert_array_equal(m.h, h0)
+        np.testing.assert_array_equal(m.age, age0)
+        self.assertEqual(m.time, 0)
+
+    def test_nonfinite_parameters_rejected_early(self):
+        for value in (float("nan"), float("inf"), -float("inf")):
+            for name in ("length", "slope", "dt", "years", "wind_direction_deg", "record_interval"):
+                with self.subTest(name=name, value=value), self.assertRaises(ValueError):
+                    tt.HillslopeConfig(**{name: value}).validate()
+            for name in ("lifespan_mean", "lifespan_sd", "density", "root_plate_depth"):
+                with self.subTest(name=name, value=value), self.assertRaises(ValueError):
+                    tt.replace(tt.SPECIES["pine"], **{name: value}).validate()
+
+    def test_integer_soil_depth_allocates_floating_point_state(self):
+        for depth in (0, 1):
+            m = model(initial_soil_depth=depth, tree_throw=False)
+            self.assertEqual(m.h.dtype.kind, "f")
+            m.step()
+            self.assertTrue(np.isfinite(m.z).all())
+
+    def test_zero_event_expectation_is_well_defined(self):
+        for sp in (tt.replace(tt.SPECIES["pine"], uproot_fraction=0, snag_fraction=0),
+                   tt.replace(tt.SPECIES["pine"], min_uproot_age=1e6)):
+            with np.errstate(all="raise"):
+                e = tt.expected_tree_throw(sp, 0.35, n_samples=1000)
+            self.assertEqual(e["events_per_ha_yr"], 0)
+            self.assertEqual(e["flux_m2_per_yr"], 0)
+            self.assertEqual(e["diffusivity_m2_per_yr"], 0)
+            self.assertEqual(e["surface_turnover_yr"], math.inf)
+            self.assertTrue(math.isnan(e["mean_event_volume_m3"]))
+
+    def test_zero_snag_fall_rate_removes_only_snag_events(self):
+        sp = tt.SPECIES["oak"]
+        e = tt.expected_tree_throw(sp, 0.35, n_samples=2000, snag_fall_rate=0)
+        _, ages = tt.draw_ages_at_death(np.random.default_rng(12345), sp, 100000)
+        expected = tt.stand_rates(sp)["deaths_per_ha_yr"] * np.mean(ages >= sp.min_uproot_age) * sp.uproot_fraction
+        self.assertAlmostEqual(e["events_per_ha_yr"], expected)
+        self.assertGreater(e["flux_m2_per_yr"], 0)
+        all_snags = tt.replace(sp, uproot_fraction=0, snag_fraction=1)
+        e = tt.expected_tree_throw(all_snags, 0.35, n_samples=2000, snag_fall_rate=0)
+        self.assertEqual(e["flux_m2_per_yr"], 0)
+
+    def test_run_handles_roundoff_in_requested_step_count(self):
+        m = model(years=0.1 + 0.2, dt=0.1, tree_throw=False)
+        m.run(progress=False)
+        self.assertEqual(m.time, m.cfg.years)
+        self.assertEqual(m.record.time[-1], m.time)
+
+    def test_expected_samples_must_be_positive_integer(self):
+        for n in (0, -1, 1.5):
+            with self.subTest(n=n), self.assertRaises(ValueError):
+                tt.expected_tree_throw(tt.SPECIES["pine"], 0.35, n_samples=n)
+        for bad in (dict(soil_depth=-1), dict(infill_critical_slope=0), dict(root_decay_time=0),
+                    dict(rock_to_soil_dilation=0.5), dict(snag_fall_rate=-1)):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                tt.expected_tree_throw(tt.SPECIES["pine"], 0.35, **bad)
+        with self.assertRaises(ValueError):
+            tt.HillslopeConfig(n_snapshots=1.5).validate()
+
+    def test_expected_cache_is_reused_without_exposing_mutable_results(self):
+        sp = tt.replace(tt.SPECIES["pine"], key="cache_regression")
+        with patch.object(tt, "draw_mature_sizes", wraps=tt.draw_mature_sizes) as draw:
+            first = tt.expected_tree_throw(sp, 0.35, n_samples=1200)
+            original = dict(first)
+            first["flux_m2_per_yr"] = -999
+            second = tt.expected_tree_throw(sp, 0.35, n_samples=1200)
+            self.assertEqual(second, original)
+            self.assertEqual(draw.call_count, 1)
+            tt.expected_tree_throw(sp, 0.4, n_samples=1200)
+            self.assertEqual(draw.call_count, 2)
+            tt.expected_tree_throw(sp, 0.4, n_samples=1200, seed=None)
+            tt.expected_tree_throw(sp, 0.4, n_samples=1200, seed=None)
+            self.assertEqual(draw.call_count, 4)
+
+    def test_qa_budget_gate_rejects_failures(self):
+        from validation.qaqc_checks import check_budget
+        good = ("probe", 1.0, 1.0, 0.0, 0, 0.0, True, 0.0, True)
+        check_budget(good)
+        for index, value in ((1, 1.0 + 1e-9), (3, 1e-8), (6, False), (7, -1e-6)):
+            bad = list(good)
+            bad[index] = value
+            with self.subTest(index=index), self.assertRaises(AssertionError):
+                check_budget(bad)
+
+    def test_summary_preserves_model_rng_state(self):
+        m = model()
+        state = m.rng.bit_generator.state
+        m.summary()
+        m.summary()
+        self.assertEqual(m.rng.bit_generator.state, state)
 
 
 class DiffusionTests(unittest.TestCase):

@@ -115,6 +115,14 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
+
+def _validate_finite_parameters(obj) -> None:
+    """Reject non-finite numeric dataclass values before allocating grids/drawing RNGs."""
+    bad = [name for name, value in vars(obj).items()
+           if isinstance(value, (int, float, np.integer, np.floating)) and not math.isfinite(value)]
+    if bad:
+        raise ValueError(f"Parameters must be finite: {', '.join(bad)}")
+
 # ======================================================================
 # 1. Species parameter sets
 # ======================================================================
@@ -183,6 +191,7 @@ class TreeSpecies:
         return pit_volume_factor(self.pit_shape_exponent) * math.pi * r * r * self.root_plate_depth
 
     def validate(self) -> None:
+        _validate_finite_parameters(self)
         checks = {
             "lifespan_mean": self.lifespan_mean > 0,
             "lifespan_sd": self.lifespan_sd >= 0,
@@ -487,6 +496,7 @@ class HillslopeConfig:
     seed: Optional[int] = 42
 
     def validate(self) -> None:
+        _validate_finite_parameters(self)
         if self.length <= 0 or self.width <= 0:
             raise ValueError("Hillslope length and width must be positive.")
         if self.slope < 0:
@@ -536,6 +546,8 @@ class HillslopeConfig:
         bad = [k for k, ok in checks.items() if not ok]
         if bad:
             raise ValueError(f"Invalid configuration: {', '.join(bad)}")
+        if not isinstance(self.n_snapshots, (int, np.integer)):
+            raise ValueError("n_snapshots must be an integer.")
 
 
 # ======================================================================
@@ -702,19 +714,64 @@ def expected_tree_throw(sp: TreeSpecies, slope: float, infill_fraction: float = 
     otherwise soil is unlimited.  Returns the
     event rate, mean excavated and displaced volumes, mean displacement, mean
     downslope flux q (m^2/yr) and the equivalent linear diffusivity D_tt = q / S.
+
+    Deterministic expectations are cached by every argument; each call returns a
+    fresh dictionary.  With no eligible uprootings, flux and rate are zero,
+    turnover time is infinite and conditional event means are undefined (NaN).
     """
+    if not isinstance(n_samples, (int, np.integer)) or n_samples <= 0:
+        raise ValueError("n_samples must be a positive integer.")
+    sp.validate()
+    if not math.isfinite(slope) or slope < 0:
+        raise ValueError("slope must be finite and non-negative.")
+    if not math.isfinite(root_decay_time) or root_decay_time <= 0:
+        raise ValueError("root_decay_time must be finite and positive.")
+    if snag_fall_rate is not None and (not math.isfinite(snag_fall_rate) or snag_fall_rate < 0):
+        raise ValueError("snag_fall_rate must be finite and non-negative.")
+    if (not math.isfinite(infill_fraction) or not 0 <= infill_fraction < 1
+            or not math.isfinite(infill_critical_slope) or infill_critical_slope <= 0):
+        raise ValueError("infill_fraction must be in [0, 1), and infill_critical_slope finite and positive.")
+    if soil_depth is not None and (not math.isfinite(soil_depth) or soil_depth < 0):
+        raise ValueError("soil_depth must be finite and non-negative.")
+    if (not math.isfinite(bedrock_pluck_fraction) or not 0 <= bedrock_pluck_fraction <= 1
+            or not math.isfinite(rock_to_soil_dilation) or rock_to_soil_dilation < 1):
+        raise ValueError("bedrock_pluck_fraction must be in [0, 1], and rock_to_soil_dilation finite and >= 1.")
+    # A caller explicitly requesting an unseeded draw must still get a new draw.
+    calculate = _expected_tree_throw_cached.__wrapped__ if seed is None else _expected_tree_throw_cached
+    return dict(calculate(
+        sp, slope, infill_fraction, infill_critical_slope, n_samples, seed, soil_depth,
+        bedrock_pluck_fraction, rock_to_soil_dilation, root_decay_time, snag_fall_rate))
+
+
+@lru_cache(maxsize=64)
+def _expected_tree_throw_cached(sp, slope, infill_fraction, infill_critical_slope,
+                                n_samples, seed, soil_depth, bedrock_pluck_fraction,
+                                rock_to_soil_dilation, root_decay_time, snag_fall_rate):
+    """Cached calculation; keep RNG draws/arithmetic identical for ordinary runs."""
+    k_fall = sp.snag_fall_rate if snag_fall_rate is None else snag_fall_rate
+    rate_ha = sp.uproot_rate_per_ha
+    if k_fall == 0:
+        rates = stand_rates(sp)
+        rate_ha *= 1.0 - rates["snag_share_of_uprootings"]
+    if rate_ha == 0:
+        return {"events_per_ha_yr": 0.0, "mean_event_volume_m3": float("nan"),
+                "mean_displaced_volume_m3": float("nan"), "mean_displacement_m": float("nan"),
+                "mean_cos_fall": float("nan"), "flux_m2_per_yr": 0.0,
+                "diffusivity_m2_per_yr": 0.0 if slope > 0 else float("nan"),
+                "surface_turnover_yr": float("inf")}
     rng = np.random.default_rng(seed)
     _, age_death = draw_ages_at_death(rng, sp, n_samples)
     age_death = age_death[age_death >= sp.min_uproot_age]     # only these trees can uproot
     n_samples = age_death.size
+    if n_samples == 0:
+        raise ValueError("No eligible uprootings sampled; increase n_samples or check min_uproot_age.")
     r_m, h_m = draw_mature_sizes(rng, sp, n_samples)
     r, h = plate_at_age(sp, r_m, h_m, age_death)
     # Uprootings of standing-dead trees: their root plates decay until the snag topples.
     p_now = sp.uproot_fraction
-    p_snag = (1.0 - p_now) * sp.snag_fraction * sp.p_snag_uproot
+    p_snag = (1.0 - p_now) * sp.snag_fraction * sp.p_snag_uproot if k_fall > 0 else 0.0
     if p_now + p_snag > 0 and p_snag > 0:
         is_snag = rng.random(n_samples) < p_snag / (p_now + p_snag)
-        k_fall = sp.snag_fall_rate if snag_fall_rate is None else snag_fall_rate
         shrink = np.exp(-rng.exponential(1.0 / k_fall, n_samples) / root_decay_time) ** (1.0 / 3.0)
         f = np.where(is_snag, shrink, 1.0)
         r, h = r * f, h * f
@@ -736,10 +793,10 @@ def expected_tree_throw(sp: TreeSpecies, slope: float, infill_fraction: float = 
     infill = infill_at_slope(infill_fraction, slope * np.cos(phi), infill_critical_slope)
     displaced = vol * (1 - infill)
     disp = a + pit_centroid_depth_fraction(n) * h
-    rate = sp.uproot_rate_per_ha / 1.0e4           # events / m^2 / yr
+    rate = rate_ha / 1.0e4           # events / m^2 / yr
     q = rate * float(np.mean(displaced * disp * np.cos(phi)))
     return {
-        "events_per_ha_yr": sp.uproot_rate_per_ha,
+        "events_per_ha_yr": rate_ha,
         "mean_event_volume_m3": float(np.mean(vol)),
         "mean_displaced_volume_m3": float(np.mean(displaced)),
         "mean_displacement_m": float(np.sum(displaced * disp) / np.sum(displaced)),
@@ -794,7 +851,8 @@ class TreeThrowModel:
         # Elevation: planar slope, channel (row nx-1) at z = 0.
         z0 = config.slope * (self.x[-1] - self.x)
         z0 = np.repeat(z0[:, None], self.ny, axis=1)
-        self.h = np.full((self.nx, self.ny), config.initial_soil_depth if config.soil_model else 0.0)
+        self.h = np.full((self.nx, self.ny), config.initial_soil_depth if config.soil_model else 0.0,
+                         dtype=float)
         self.zb = z0 - self.h
         self.z_initial = z0.copy()
         self.channel_z0 = 0.0
@@ -1088,9 +1146,10 @@ class TreeThrowModel:
         """Split collapsing soil into disjoint patches, each with its own box and time step.
 
         Yields (rows, cols, periodic, D) with D zero outside the patch.  Patches are
-        8-connected regions of D > 0 (separated by at least one calm cell), so no cell
-        is diffused twice in a step.  A patch touching the plot's side edges is solved
-        across the full (periodic) width.  Without scipy the whole band is one patch.
+        connected regions of the active cells AND their one-cell transport halos.
+        Periodic sides are joined before solving, including diagonal neighbours.
+        This prevents shared halo cells from being updated by independent solves.
+        Without scipy the whole band is one patch.
         """
         nr, nc = Dc.shape
         full_cols = np.arange(nc)
@@ -1099,16 +1158,43 @@ class TreeThrowModel:
         except ImportError:
             yield np.arange(nr), full_cols, True, Dc
             return
-        lab, n = ndimage.label(Dc > 0, structure=np.ones((3, 3), bool))
+        structure = np.ones((3, 3), bool)
+        # Padding only across columns wraps the halo in y, without joining ridge
+        # and channel.  The halo consists of cells adjacent to D > 0 faces.
+        padded = np.pad(Dc > 0, ((0, 0), (1, 1)), mode="wrap")
+        halo = ndimage.binary_dilation(padded, structure=structure)[:, 1:-1]
+        lab, n = ndimage.label(halo, structure=structure)
         if n == 0:
             return
+        # Union labels on opposite sides of the cylinder.  Labelling a periodic
+        # bounding box alone does not connect the seam's components.
+        parent = np.arange(n + 1)
+
+        def root(k):
+            while parent[k] != k:
+                parent[k] = parent[parent[k]]
+                k = parent[k]
+            return k
+
+        pairs = np.concatenate((np.column_stack((lab[:, 0], lab[:, -1])),
+                                np.column_stack((lab[:-1, 0], lab[1:, -1])),
+                                np.column_stack((lab[1:, 0], lab[:-1, -1]))))
+        pairs = pairs[(pairs[:, 0] > 0) & (pairs[:, 1] > 0) & (pairs[:, 0] != pairs[:, 1])]
+        for a, b in np.unique(pairs, axis=0):
+            ra, rb = root(a), root(b)
+            parent[max(ra, rb)] = min(ra, rb)
+        if pairs.size:
+            lab = np.array([root(k) for k in range(n + 1)])[lab]
         objs = ndimage.find_objects(lab)
-        for k, (rs, cs) in enumerate(objs, start=1):
-            r0, r1 = max(rs.start - 1, 0), min(rs.stop + 1, nr)
+        for k, obj in enumerate(objs, start=1):
+            if obj is None:       # label removed by periodic union
+                continue
+            rs, cs = obj
+            r0, r1 = rs.start, rs.stop
             if cs.start == 0 or cs.stop == nc:
                 cols, periodic = full_cols, True
             else:
-                cols, periodic = np.arange(cs.start - 1, cs.stop + 1), False
+                cols, periodic = np.arange(cs.start, cs.stop), False
             rows = np.arange(r0, r1)
             sub = lab[np.ix_(rows, cols)] == k
             yield rows, cols, periodic, np.where(sub, Dc[np.ix_(rows, cols)], 0.0)
@@ -1304,7 +1390,17 @@ class TreeThrowModel:
             hs = cfg.transport_depth_scale
             Dx *= 1 - np.exp(-0.5 * (h[1:] + h[:-1]) / hs)
             Dy *= 1 - np.exp(-0.5 * (h + np.roll(h, -1, axis=1)) / hs)
-        return -Dx * Sx, -Dy * Sy, max(Dx.max(), Dy.max())
+        if cfg.transport_law == "nonlinear":
+            # Stability depends on dq/dS, not only q/S.  For q = D0*S/(1-r),
+            # the largest gradient-Jacobian eigenvalue is D_eff*(1+r)/(1-r).
+            # Above the existing mobility cap, D_eff is constant in gradient.
+            rx, ry = Sx_mag2 / cfg.critical_slope ** 2, Sy_mag2 / cfg.critical_slope ** 2
+            cx = np.where(rx < 0.95, (1 + rx) / np.maximum(1 - rx, 0.05), 1.0)
+            cy = np.where(ry < 0.95, (1 + ry) / np.maximum(1 - ry, 0.05), 1.0)
+            d_stable = max(float((Dx * cx).max()), float((Dy * cy).max()))
+        else:
+            d_stable = max(Dx.max(), Dy.max())
+        return -Dx * Sx, -Dy * Sy, d_stable
 
     def _diffusion_step(self, dt: float) -> None:
         cfg, dx = self.cfg, self.cfg.dx
@@ -1351,6 +1447,8 @@ class TreeThrowModel:
 
     def step(self, dt: Optional[float] = None) -> int:
         dt = self.cfg.dt if dt is None else dt
+        if not math.isfinite(dt) or dt <= 0:
+            raise ValueError("step dt must be finite and positive.")
         t_start = self.time
         n = self._tree_step(dt) if self.cfg.tree_throw else 0   # events at the start of the step
         self.time += dt
@@ -1385,6 +1483,9 @@ class TreeThrowModel:
         """Run the model.  `callback(model)` is called after every step; if it returns
         False the run stops early (used by the GUI for progress, frames and cancelling)."""
         years = self.cfg.years if years is None else years
+        if not math.isfinite(years) or years <= 0:
+            raise ValueError("run years must be finite and positive.")
+        end_time = self.time + years
         nsteps = int(math.ceil(years / self.cfg.dt))
         snap_every = max(nsteps // max(self.cfg.n_snapshots - 1, 1), 1)
         rec_every = max(int(round(self.cfg.record_interval / self.cfg.dt)), 1)
@@ -1392,7 +1493,9 @@ class TreeThrowModel:
         self._snapshot()
         events = 0
         for k in range(1, nsteps + 1):
-            events += self.step()
+            if self.time >= end_time:   # e.g. ceil((0.1 + 0.2) / 0.1) can be four
+                break
+            events += self.step(min(self.cfg.dt, end_time - self.time))
             if k % rec_every == 0 or k == nsteps:
                 self._record(events)
                 events = 0
@@ -1407,6 +1510,10 @@ class TreeThrowModel:
                     self._record(events)
                 self._snapshot()
                 break
+        if self.record.time[-1] != self.time:
+            self._record(events)
+        if self.record.snapshot_times[-1] != self.time:
+            self._snapshot()
         if progress:
             print()
         return self.record
